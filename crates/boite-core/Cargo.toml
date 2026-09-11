@@ -19,7 +19,7 @@ toml = "1.1"
 portable-pty = "0.9"
 vte = "0.15"
 which = "8"
-dirs = "6"
+dirs = "7"
 base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
 # The logging module. Every host writes through one `tracing` layer here, so the
