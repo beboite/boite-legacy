@@ -55,7 +55,7 @@ url = "2"
 # Resolves the app data directory before `tauri::Builder` exists, which is where
 # the identifier migration has to run. Same crate and same rules Tauri uses for
 # `app_data_dir()`, so the two agree on the path.
-dirs = "6"
+dirs = "7"
 
 # Dev-only agent bridge. Optional so a release build links none of it: the
 # plugin exposes execute_js and a screenshot command, and nothing gated by

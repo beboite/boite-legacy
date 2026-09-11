@@ -25,6 +25,6 @@ tracing = "0.1"
 # sidecar links nothing new: `dirs` for the dev instance's own directories,
 # `base64` for the screenshot the bridge sends as a data URL, and `rusqlite`
 # for the read-only SQL on its database.
-dirs = "6"
+dirs = "7"
 base64 = "0.23"
 rusqlite = { version = "0.32", features = ["bundled"] }
