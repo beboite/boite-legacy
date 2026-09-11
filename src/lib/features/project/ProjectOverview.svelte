@@ -241,10 +241,11 @@
 <div class="flex flex-col gap-3" bind:clientWidth={width}>
   <ProjectHealthBanner {project} {health} />
 
-  <!-- `items-start` is what lets an empty card be short. A grid row stretches
-       its children to the tallest of them by default, which is how a card
-       holding one line of "nothing here" ended up as a full-height box with
-       the line floating at the top of it. -->
+  <!-- Columns of stacked cards, not one grid of mixed heights. A CSS grid row
+       is as tall as its tallest cell, so a short card next to a commit list
+       left a hole the next row could not fill. Each column is a flex stack,
+       so Threads sits on Turns and Todos on the project settings, and the
+       ragged edge is at the bottom of the group. -->
   <div
     class={[
       "grid items-start gap-3",
@@ -252,6 +253,9 @@
       columns === 2 && "grid-cols-2",
     ]}
   >
+    <div
+      class={["flex min-w-0 flex-col gap-3", columns === 3 && !repoCards && "col-span-2"]}
+    >
   <!-- Terminals. The list is the whole card: starting one is the shortcut bar's
        job, one row up. It leads the page: it is what the user came for, and it
        used to be the smallest card under the one they look at once a month. -->
@@ -342,11 +346,82 @@
     {/if}
   </DashboardCard>
 
+      {#if columns === 1}
+        {#if repoCards}{@render gitCard()}{/if}
+        {@render todosCard()}
+        {#if repoCards}
+          <ThreadTurns {project} />
+          <ProjectWorktrees {project} />
+        {/if}
+        <ProjectRepoSettings {project} />
+      {:else if columns === 3 && repoCards}
+        <ThreadTurns {project} />
+      {:else if repoCards}
+        {@render gitCard()}
+        <ThreadTurns {project} />
+        <ProjectWorktrees {project} />
+      {/if}
+    </div>
+
+    {#if columns === 3 && repoCards}
+      <div class="flex min-w-0 flex-col gap-3">
+        {@render gitCard()}
+        <ProjectWorktrees {project} />
+      </div>
+    {/if}
+
+    {#if columns >= 2}
+      <div class="flex min-w-0 flex-col gap-3">
+        {@render todosCard()}
+        <ProjectRepoSettings {project} />
+      </div>
+    {/if}
+  </div>
+
+  <!-- Two columns, with the figures in the third. They were split so the
+       calendar could take the width a year of squares needs; placing Stats
+       after Usage is what keeps that pairing on one row instead of leaving
+       an empty cell beside each of them. -->
+  <div
+    class={[
+      "grid items-start gap-3",
+      columns === 3 && "grid-cols-3",
+      columns === 2 && "grid-cols-2",
+    ]}
+  >
+    <ProjectUsage
+      {project}
+      hideCalendar={tinyWidth}
+      class={columns >= 2 ? "col-span-2" : ""}
+    />
+
+    <ProjectStats
+      {project}
+      threadCount={threads.length}
+      openTodos={openTodos.length}
+      commits={git?.commitCount ?? 0}
+      gitLoaded={!!git?.loaded}
+      gitIsRepo={!!git?.isRepo}
+    />
+
+    <ProjectMcpSettings {project} class={columns === 3 ? "col-span-full" : ""} />
+
+    <!-- The paths, as a line rather than a card. They are the one thing here
+         that never changes, and a card's worth of chrome around two static
+         strings was room the rest of the page wanted. -->
+    <p class="col-span-full truncate px-1 text-sm text-muted-2" use:tip={pathTip}>
+      {project.cwd}{#if project.gitRoot && project.gitRoot !== project.cwd}
+        · {t("project.repoAt", { path: project.gitRoot })}
+      {/if}
+    </p>
+  </div>
+</div>
+
+{#snippet gitCard()}
   <!-- Git. A summary, not a panel: branch, how far from upstream, what is
        uncommitted, and the last few commits with when they landed. Absent
        entirely while the banner is up: a folder that is gone has no branch,
        and the card used to answer that with an OS error in red. -->
-  {#if repoCards}
   <DashboardCard title={t("project.git")}>
     {#snippet icon()}<GitBranch class="size-3.5" />{/snippet}
     {#if !git?.loaded}
@@ -405,19 +480,17 @@
       {/if}
     {/if}
   </DashboardCard>
-  {/if}
+{/snippet}
 
-  <!-- What this project does to every thread launched in it. Third, because
-       the two above it are what is happening and this is what was decided. -->
-  <ProjectRepoSettings {project} />
-
-  <!-- Todos. The list itself, not a summary of it: this card used to be six
-       truncated titles with an input under them, which is the right shape only
-       while a docked column is one click away. There is no column any more, so
-       this is a full todo surface — the same component the pane draws, with the
-       same tick, confirm, edit, drag and delete on every card. Claimed is still
-       called out separately: it means an agent says it is done and only the
-       user can confirm that. -->
+{#snippet todosCard()}
+  <!-- Todos. Third of the first row, next to terminals and git, because those
+       three are what is happening. The list itself, not a summary of it: this
+       card used to be six truncated titles with an input under them, which is
+       the right shape only while a docked column is one click away. There is
+       no column any more, so this is a full todo surface, the same component
+       the pane draws, with the same tick, confirm, edit, drag and delete on
+       every card. Claimed is still called out separately: it means an agent
+       says it is done and only the user can confirm that. -->
   <DashboardCard title={t("project.todos")} badge={openTodos.length || null} flush>
     {#snippet icon()}<ListTodo class="size-3.5" />{/snippet}
     {#snippet lead()}
@@ -445,49 +518,4 @@
       <TodoList projectId={project.id} compact />
     </div>
   </DashboardCard>
-
-  <!-- Where the agents actually are. Read from the repository, so it goes with
-       the git card rather than with the switch that decides what it will hold
-       tomorrow. -->
-  {#if repoCards}
-    <ProjectWorktrees
-      {project}
-      class={columns === 3 ? "col-span-2" : columns === 2 ? "col-span-2" : ""}
-    />
-  {/if}
-
-  <ProjectMcpSettings {project} />
-
-  <!-- What the agent did, turn by turn, and the way back out of one. Reads the
-       same repository as the git card, so it goes away with it. -->
-  {#if repoCards}
-    <ThreadTurns {project} />
-  {/if}
-
-  <ProjectStats
-    {project}
-    threadCount={threads.length}
-    openTodos={openTodos.length}
-    commits={git?.commitCount ?? 0}
-    gitLoaded={!!git?.loaded}
-    gitIsRepo={!!git?.isRepo}
-  />
-
-  <!-- Last, and it used to be first by size: the thing looked at once a month
-       was the largest element on the page. -->
-  <ProjectUsage
-    {project}
-    hideCalendar={tinyWidth}
-    class={columns === 3 ? "col-span-2" : columns === 2 ? "col-span-2" : ""}
-  />
-
-  <!-- The paths, as a line rather than a card. They are the one thing here
-       that never changes, and a card's worth of chrome around two static
-       strings was room the rest of the page wanted. -->
-  <p class="col-span-full truncate px-1 text-sm text-muted-2" use:tip={pathTip}>
-    {project.cwd}{#if project.gitRoot && project.gitRoot !== project.cwd}
-      · {t("project.repoAt", { path: project.gitRoot })}
-    {/if}
-  </p>
-  </div>
-</div>
+{/snippet}

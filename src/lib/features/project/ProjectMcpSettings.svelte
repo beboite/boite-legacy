@@ -11,8 +11,8 @@
   import DashboardCard from "./DashboardCard.svelte";
   import type { Project } from "$lib/types";
 
-  type Props = { project: Project };
-  let { project }: Props = $props();
+  type Props = { project: Project; class?: string };
+  let { project, class: klass = "" }: Props = $props();
 
   let servers = $state<McpServerRow[]>([]);
   let loading = $state(true);
@@ -90,7 +90,7 @@
 <DashboardCard
   title={t("project.mcpTitle")}
   badge={managed ? t("project.mcpCustom") : t("project.mcpDefaults")}
-  class="lg:col-span-3"
+  class={klass}
 >
   {#snippet icon()}<PlugZap class="size-3.5" />{/snippet}
   {#snippet actions()}
