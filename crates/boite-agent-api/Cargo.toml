@@ -24,7 +24,7 @@ serde_json = "1"
 # loop, and a byte-by-byte `!=` short-circuits.
 subtle = "2"
 uuid = { version = "1", features = ["v4"] }
-dirs = "6"
+dirs = "7"
 # `spawn_blocking` for the git calls, which spawn processes that must not sit on
 # the runtime, `time` for the routes that wait on a page, and `sync` for the
 # oneshot a device's answer rides back on: both hosts already run a tokio

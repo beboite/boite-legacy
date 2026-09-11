@@ -37,7 +37,7 @@ http = "1"
 # Pure-Rust deflate (miniz_oxide backend, no C) so it cross-compiles to arm64.
 # Used to gzip the one-shot scrollback replay frame.
 flate2 = "1"
-dirs = "6"
+dirs = "7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # A pairing link nobody can type is a pairing flow nobody uses, so it is drawn:
