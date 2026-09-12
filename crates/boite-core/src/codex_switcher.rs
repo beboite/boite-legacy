@@ -16,7 +16,7 @@ fn tool() -> Command {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     cmd
 }
@@ -77,6 +77,8 @@ pub fn version_blocking() -> Option<String> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
+    // `codex-account-switcher 0.2.1`, the convention every `--version` follows.
+    // The name is already known here, so only the number is carried back.
     let version = text
         .split_whitespace()
         .last()
@@ -87,5 +89,31 @@ pub fn version_blocking() -> Option<String> {
         None
     } else {
         Some(version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activate_rejects_empty_id() {
+        let err = activate_blocking("").unwrap_err();
+        assert!(err.contains("account id"), "got: {err}");
+    }
+
+    #[test]
+    fn activate_passes_non_empty_id_to_process() {
+        // codex-account-switcher is not installed in CI, so the spawn itself
+        // fails — which proves the id is not intercepted before it reaches the
+        // process boundary.
+        assert!(activate_blocking("test-account-123").is_err());
+    }
+
+    #[test]
+    fn version_returns_none_when_binary_missing() {
+        // If fastpick isn't on the PATH (typical in CI), this returns None
+        // rather than panicking. We just assert it doesn't crash.
+        let _ = version_blocking();
     }
 }

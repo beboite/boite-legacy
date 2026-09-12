@@ -44,3 +44,20 @@ pub fn version_blocking() -> Option<String> {
         Some(version)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_blocking_does_not_panic() {
+        // fast-mcp-ssh may or may not be installed in the test environment.
+        // The contract is: absence is not an error — returns None gracefully,
+        // presence returns Some(non-empty version) — and it never panics.
+        let result = version_blocking();
+        match &result {
+            Some(v) => assert!(!v.is_empty(), "version must be non-empty when present"),
+            None => {}
+        }
+    }
+}

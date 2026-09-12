@@ -6,7 +6,7 @@ use serde::Serialize;
 
 const MAX_TEXT_BYTES: u64 = 10 * 1024 * 1024;
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextFile {
     pub content: String,
@@ -85,7 +85,6 @@ pub fn write_blocking(path: &str, content: &str) -> Result<u64, String> {
     if p.parent().is_none() {
         return Err("invalid path: no parent".to_string());
     }
-
     // Resolve symlinks: rename() replaces the link itself otherwise, turning a
     // symlinked config into a regular file on first save. canonicalize fails for
     // a file that does not exist yet, which is the create case — keep the path.
@@ -112,8 +111,7 @@ pub fn write_blocking(path: &str, content: &str) -> Result<u64, String> {
     tmp_path.push(format!(".{}.boite.tmp", file_name));
 
     {
-        let mut f = fs::File::create(&tmp_path)
-            .map_err(|e| format!("create temp failed: {e}"))?;
+        let mut f = fs::File::create(&tmp_path).map_err(|e| format!("create temp failed: {e}"))?;
         f.write_all(content.as_bytes())
             .map_err(|e| format!("write temp failed: {e}"))?;
         f.sync_all().map_err(|e| format!("fsync failed: {e}"))?;
@@ -128,4 +126,150 @@ pub fn write_blocking(path: &str, content: &str) -> Result<u64, String> {
         return Err(format!("rename failed: {e}"));
     }
     Ok(content.len() as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Seek, Write};
+
+    #[test]
+    fn read_blocking_rejects_non_file() {
+        let tmp = std::env::temp_dir();
+        let dir = tmp.join(format!("boite_test_nonfile_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let result = read_blocking(&dir.to_string_lossy());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "not a file");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_blocking_rejects_oversized_file() {
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!("boite_test_big_{}.txt", std::process::id()));
+        // Write a file just over MAX_TEXT_BYTES by writing one byte past the limit.
+        let mut f = fs::File::create(&path).unwrap();
+        let chunk = vec![0u8; 1024];
+        let mut written = 0u64;
+        while written < MAX_TEXT_BYTES {
+            f.write_all(&chunk).unwrap();
+            written += 1024;
+        }
+        f.write_all(&[0u8]).unwrap();
+        drop(f);
+        let result = read_blocking(&path.to_string_lossy());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too large"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_blocking_rejects_binary_files() {
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!("boite_test_bin_{}.txt", std::process::id()));
+        let mut f = fs::File::create(&path).unwrap();
+        f.write_all(b"hello\x00world").unwrap();
+        drop(f);
+        let result = read_blocking(&path.to_string_lossy());
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "binary file");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_blocking_reads_utf8() {
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!("boite_test_utf8_{}.txt", std::process::id()));
+        fs::write(&path, "héllo wörld\n").unwrap();
+        let result = read_blocking(&path.to_string_lossy()).unwrap();
+        assert!(!result.lossy);
+        assert_eq!(result.content, "héllo wörld\n");
+        assert!(!result.is_readonly);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_blocking_marks_lossy_utf8() {
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!("boite_test_lossy_{}.txt", std::process::id()));
+        // 0xFF is invalid UTF-8 on its own.
+        fs::write(&path, b"prefix\xFFsuffix").unwrap();
+        let result = read_blocking(&path.to_string_lossy()).unwrap();
+        assert!(result.lossy);
+        assert!(result.content.contains("prefix"));
+        assert!(result.content.contains("suffix"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_base64_round_trips_bytes() {
+        use base64::Engine as _;
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!("boite_test_b64_{}.bin", std::process::id()));
+        let bytes = b"hello\x00world\x01\x02";
+        fs::write(&path, bytes).unwrap();
+        let encoded = read_base64_blocking(&path.to_string_lossy()).unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&encoded)
+            .unwrap();
+        assert_eq!(decoded, bytes);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_base64_rejects_oversized_file() {
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!("boite_test_bigb64_{}.bin", std::process::id()));
+        // Create a sparse file larger than MAX_VIEW_BYTES
+        let mut f = fs::File::create(&path).unwrap();
+        f.seek(std::io::SeekFrom::Start(MAX_VIEW_BYTES + 1))
+            .unwrap();
+        f.write_all(&[0u8]).unwrap();
+        drop(f);
+        let result = read_base64_blocking(&path.to_string_lossy());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too large"));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn write_blocking_creates_new_file() {
+        let tmp = std::env::temp_dir();
+        let dir = tmp.join(format!("boite_test_write_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("output.txt");
+        let result = write_blocking(&path.to_string_lossy(), "hello write\n");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello write\n".len() as u64);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello write\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_blocking_rejects_no_parent() {
+        let result = write_blocking("", "content");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("parent"));
+    }
+
+    #[test]
+    fn write_blocking_rejects_nonexistent_parent() {
+        let tmp = std::env::temp_dir();
+        let path = tmp.join(format!(
+            "boite_test_noparent_{}/file.txt",
+            std::process::id()
+        ));
+        let result = write_blocking(&path.to_string_lossy(), "content");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("parent not a directory"));
+    }
+
+    #[test]
+    fn looks_binary_detects_nul_byte() {
+        assert!(looks_binary(&[0u8]));
+        assert!(looks_binary(b"hello\x00world"));
+        assert!(!looks_binary(b"hello world"));
+        assert!(!looks_binary(&[]));
+    }
 }

@@ -225,7 +225,9 @@ pub fn write_artifact_policy(repo: &Path, policy: &ArtifactPolicy) -> Result<(),
         }
         // The same mistake with nothing to spot it by: a bare `target` in a cargo
         // project is build output whether or not the author filled in the flags.
-        if entry.mode == ShareMode::Link && entry.dir == "target" && repo.join("Cargo.toml").is_file()
+        if entry.mode == ShareMode::Link
+            && entry.dir == "target"
+            && repo.join("Cargo.toml").is_file()
         {
             return Err(
                 "'target' is cargo's build output and cannot be shared with 'link': two worktrees \
@@ -548,10 +550,7 @@ pub(super) fn is_local_artifact(name: &str, locals: &HashSet<String>) -> bool {
         }
         _ => stem,
     };
-    locals.contains(base)
-        || base
-            .strip_prefix("lib")
-            .is_some_and(|s| locals.contains(s))
+    locals.contains(base) || base.strip_prefix("lib").is_some_and(|s| locals.contains(s))
 }
 
 /// Whether a path inside a shared build directory is one the worktree has to
@@ -643,7 +642,9 @@ fn hardlink_build_output(
         // No package list means no way to tell a local artifact from a vendored
         // one, and linking the wrong file hands this worktree another's binary.
         if names.is_empty() {
-            return Err(std::io::Error::other("cannot identify the workspace packages"));
+            return Err(std::io::Error::other(
+                "cannot identify the workspace packages",
+            ));
         }
         names
     } else {
@@ -782,3 +783,486 @@ pub fn unlink_shared_artifacts(repo: &Path, worktree: &Path) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glob_matches_single_star() {
+        assert!(glob_matches("*.js", "a.js"));
+        assert!(glob_matches("*.js", "a.js.js"));
+        assert!(!glob_matches("*.js", "a.ts"));
+        assert!(glob_matches("src/*.rs", "src/lib.rs"));
+        assert!(!glob_matches("src/*.rs", "tests/lib.rs"));
+    }
+
+    #[test]
+    fn glob_matches_double_star() {
+        assert!(glob_matches("**/*.rs", "src/lib.rs"));
+        assert!(glob_matches("**/*.rs", "src/deep/nested/lib.rs"));
+        assert!(glob_matches("**/*.rs", "lib.rs"));
+        assert!(!glob_matches("**/*.rs", "src/lib.ts"));
+    }
+
+    #[test]
+    fn glob_matches_literal() {
+        assert!(glob_matches("package.json", "package.json"));
+        assert!(!glob_matches("package.json", "package.json.bak"));
+    }
+
+    #[test]
+    fn glob_matches_empty_segments() {
+        assert!(glob_matches("src/**", "src/deep"));
+        assert!(glob_matches("src/**", "src"));
+    }
+
+    #[test]
+    fn glob_matches_backslash_separator() {
+        // Windows-style paths should still match /-anchored patterns.
+        assert!(glob_matches("src/*.rs", r"src\lib.rs"));
+    }
+
+    #[test]
+    fn glob_matches_dotfile() {
+        assert!(glob_matches(".*", ".env"));
+        assert!(glob_matches(".cargo/*", ".cargo/config.toml"));
+        assert!(!glob_matches(".cargo/*", ".cargo"));
+        // `.cargo` is a literal match for itself.
+        assert!(glob_matches(".cargo", ".cargo"));
+    }
+
+    #[test]
+    fn glob_matches_no_match_on_empty_parts() {
+        // Empty segments in the pattern are filtered out.
+        assert!(glob_matches("/src/*.rs", "src/lib.rs"));
+        assert!(!glob_matches("src/*.rs", "lib.rs"));
+    }
+
+    #[test]
+    fn write_artifact_policy_writes_valid_json() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let policy = ArtifactPolicy {
+            shared: vec![SharedDir {
+                dir: "node_modules".to_string(),
+                mode: ShareMode::Link,
+                exclude: vec![],
+                cargo_workspace: false,
+            }],
+        };
+        let result = write_artifact_policy(&tmp, &policy);
+        assert!(result.is_ok());
+
+        let content = fs::read_to_string(tmp.join(POLICY_FILE)).unwrap();
+        assert!(content.contains("node_modules"));
+        assert!(content.contains("link"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_policy_rejects_path_with_separator() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let policy = ArtifactPolicy {
+            shared: vec![SharedDir {
+                dir: "src/node_modules".to_string(),
+                mode: ShareMode::Link,
+                exclude: vec![],
+                cargo_workspace: false,
+            }],
+        };
+        let err = write_artifact_policy(&tmp, &policy).unwrap_err();
+        assert!(err.contains("not a directory"), "{err}");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_policy_rejects_link_with_exclusions() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let policy = ArtifactPolicy {
+            shared: vec![SharedDir {
+                dir: "node_modules".to_string(),
+                mode: ShareMode::Link,
+                exclude: vec!["foo".to_string()],
+                cargo_workspace: false,
+            }],
+        };
+        let err = write_artifact_policy(&tmp, &policy).unwrap_err();
+        assert!(err.contains("build-output exclusions"), "{err}");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_policy_rejects_link_target_with_cargo_workspace() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let policy = ArtifactPolicy {
+            shared: vec![SharedDir {
+                dir: "node_modules".to_string(),
+                mode: ShareMode::Link,
+                exclude: vec![],
+                cargo_workspace: true,
+            }],
+        };
+        let err = write_artifact_policy(&tmp, &policy).unwrap_err();
+        assert!(err.contains("build-output exclusions"), "{err}");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn write_artifact_policy_rejects_link_target_for_cargo() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+
+        let policy = ArtifactPolicy {
+            shared: vec![SharedDir {
+                dir: "target".to_string(),
+                mode: ShareMode::Link,
+                exclude: vec![],
+                cargo_workspace: false,
+            }],
+        };
+        let err = write_artifact_policy(&tmp, &policy).unwrap_err();
+        assert!(err.contains("cargo"), "{err}");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn artifact_policy_detects_js_project() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("package.json"), "{}").unwrap();
+
+        let policy = artifact_policy(&tmp);
+        assert_eq!(policy.len(), 1);
+        assert_eq!(policy[0].dir, "node_modules");
+        assert_eq!(policy[0].mode, ShareMode::Link);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn artifact_policy_detects_python_project() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("pyproject.toml"), "[project]\nname = \"test\"\n").unwrap();
+
+        let policy = artifact_policy(&tmp);
+        assert_eq!(policy.len(), 2);
+        assert_eq!(policy[0].dir, ".venv");
+        assert_eq!(policy[1].dir, "venv");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn artifact_policy_reads_declared_policy() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join(".boite")).unwrap();
+        fs::write(
+            tmp.join(POLICY_FILE),
+            r#"{ "shared": [{ "dir": "dist", "mode": "hardlink" }] }"#,
+        )
+        .unwrap();
+
+        let policy = artifact_policy(&tmp);
+        assert_eq!(policy.len(), 1);
+        assert_eq!(policy[0].dir, "dist");
+        assert_eq!(policy[0].mode, ShareMode::Hardlink);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn artifact_policy_returns_empty_for_malformed() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join(".boite")).unwrap();
+        fs::write(tmp.join(POLICY_FILE), "not valid json").unwrap();
+
+        let policy = artifact_policy(&tmp);
+        assert!(
+            policy.is_empty(),
+            "a malformed file must not yield detection"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn effective_artifact_policy_reports_declared() {
+        let tmp = std::env::temp_dir().join(format!(
+            "boite-artifact-test-{}-{}",
+            std::process::id(),
+            rand_part()
+        ));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let ep = effective_artifact_policy(&tmp);
+        assert!(!ep.declared, "no policy file means not declared");
+
+        fs::create_dir_all(tmp.join(".boite")).unwrap();
+        fs::write(tmp.join(POLICY_FILE), r#"{ "shared": [] }"#).unwrap();
+        let ep = effective_artifact_policy(&tmp);
+        assert!(ep.declared, "a policy file means declared");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn is_local_artifact_matches_names() {
+        let locals: HashSet<String> = ["boite_core", "boite-core"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(is_local_artifact("boite_core-abcdef0123456789", &locals));
+        assert!(is_local_artifact("boite-core-abcdef0123456789", &locals));
+        assert!(is_local_artifact("libboite_core-abcdef0123456789", &locals));
+        assert!(is_local_artifact("boite_core", &locals));
+        assert!(is_local_artifact("boite-core", &locals));
+        assert!(!is_local_artifact(
+            "registry_crate-abcdef0123456789",
+            &locals
+        ));
+        assert!(!is_local_artifact("some_dep", &locals));
+    }
+
+    #[test]
+    fn is_local_artifact_requires_sixteen_hex_suffix() {
+        let locals: HashSet<String> = ["mypkg"].iter().map(|s| s.to_string()).collect();
+        // 16 hex chars → stripped, base matches
+        assert!(is_local_artifact("mypkg-abcdef0123456789", &locals));
+        // 15 hex chars → not stripped, no match
+        assert!(!is_local_artifact("mypkg-abcdef012345678", &locals));
+        // 17 hex chars → not stripped (too many for the suffix rule)
+        assert!(!is_local_artifact("mypkg-abcdef0123456789x", &locals));
+        // Non-hex suffix → not stripped
+        assert!(!is_local_artifact("mypkg-zzzzzzzzzzzzzzzz", &locals));
+    }
+
+    #[test]
+    fn is_mutable_build_artifact_with_exclude() {
+        let entry = SharedDir {
+            dir: "target".to_string(),
+            mode: ShareMode::Hardlink,
+            exclude: vec!["**/app.tmp".to_string()],
+            cargo_workspace: false,
+        };
+        let locals = HashSet::new();
+        // `**/app.tmp` swallows the directory segment.
+        assert!(is_mutable_build_artifact(
+            Path::new("debug/app.tmp"),
+            false,
+            &entry,
+            &locals
+        ));
+        // No exclude match here.
+        assert!(!is_mutable_build_artifact(
+            Path::new("debug/app.o"),
+            false,
+            &entry,
+            &locals
+        ));
+        // Different directory still matches the glob.
+        assert!(is_mutable_build_artifact(
+            Path::new("release/app.tmp"),
+            false,
+            &entry,
+            &locals
+        ));
+        // A non-matching file in the same dir.
+        assert!(!is_mutable_build_artifact(
+            Path::new("debug/other.tmp"),
+            false,
+            &entry,
+            &locals
+        ));
+    }
+
+    #[test]
+    fn is_mutable_build_artifact_without_cargo_workspace() {
+        let entry = SharedDir {
+            dir: "target".to_string(),
+            mode: ShareMode::Hardlink,
+            exclude: vec![],
+            cargo_workspace: false,
+        };
+        let locals = HashSet::new();
+        // Without cargo_workspace, only exclusions apply — none here, so nothing is mutable.
+        assert!(!is_mutable_build_artifact(
+            Path::new("debug/app"),
+            false,
+            &entry,
+            &locals,
+        ));
+    }
+
+    #[test]
+    fn is_mutable_build_artifact_cargo_lock_file() {
+        let entry = SharedDir {
+            dir: "target".to_string(),
+            mode: ShareMode::Hardlink,
+            exclude: vec![],
+            cargo_workspace: true,
+        };
+        let locals = HashSet::new();
+        // `.cargo-<anything>lock` files in any subdirectory are mutable.
+        assert!(is_mutable_build_artifact(
+            Path::new("debug/.cargo-abc123.lock"),
+            false,
+            &entry,
+            &locals
+        ));
+        assert!(is_mutable_build_artifact(
+            Path::new("debug/.cargo-lock"),
+            false,
+            &entry,
+            &locals
+        ));
+        // A nested file under a non-matching third segment is not mutable
+        // (three parts, not in deps/build/.fingerprint, no hex suffix).
+        assert!(!is_mutable_build_artifact(
+            Path::new("debug/sub/app.o"),
+            false,
+            &entry,
+            &locals
+        ));
+    }
+
+    #[test]
+    fn is_mutable_build_artifact_incremental_dir() {
+        let entry = SharedDir {
+            dir: "target".to_string(),
+            mode: ShareMode::Hardlink,
+            exclude: vec![],
+            cargo_workspace: true,
+        };
+        let locals: HashSet<String> = ["boite_core"].iter().map(|s| s.to_string()).collect();
+        assert!(is_mutable_build_artifact(
+            Path::new("incremental/foo"),
+            true,
+            &entry,
+            &locals,
+        ));
+    }
+
+    #[test]
+    fn is_mutable_build_artifact_uplifted_artifact() {
+        let entry = SharedDir {
+            dir: "target".to_string(),
+            mode: ShareMode::Hardlink,
+            exclude: vec![],
+            cargo_workspace: true,
+        };
+        let locals = HashSet::new();
+        // A file directly under debug/ or release/ is an uplifted final artifact.
+        assert!(is_mutable_build_artifact(
+            Path::new("debug/app"),
+            false,
+            &entry,
+            &locals,
+        ));
+        assert!(is_mutable_build_artifact(
+            Path::new("release/app"),
+            false,
+            &entry,
+            &locals,
+        ));
+        // A directory under debug/ is not uplifted.
+        assert!(!is_mutable_build_artifact(
+            Path::new("debug/deps"),
+            true,
+            &entry,
+            &locals,
+        ));
+    }
+
+    #[test]
+    fn is_mutable_build_artifact_inside_deps_uses_locals() {
+        let entry = SharedDir {
+            dir: "target".to_string(),
+            mode: ShareMode::Hardlink,
+            exclude: vec![],
+            cargo_workspace: true,
+        };
+        let locals: HashSet<String> = ["boite_core"].iter().map(|s| s.to_string()).collect();
+        // Local package artifact inside deps/ → mutable
+        assert!(is_mutable_build_artifact(
+            Path::new("deps/boite_core-abcdef0123456789"),
+            false,
+            &entry,
+            &locals
+        ));
+        // Registry crate artifact inside deps/ (3 parts) → not mutable
+        assert!(!is_mutable_build_artifact(
+            Path::new("deps/registry_crate-abcdef0123456789/sub.o"),
+            false,
+            &entry,
+            &locals,
+        ));
+    }
+
+    fn rand_part() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    }
+}

@@ -37,10 +37,7 @@ fn fastpick() -> Command {
 /// With `provider` named, that provider's models too. They are a separate call because
 /// listing every provider's models means one HTTP request each; fastpick answers from its
 /// own cache unless `refresh` is set, so the menu opens without waiting on the network.
-pub fn list_blocking(
-    provider: Option<String>,
-    refresh: bool,
-) -> Result<String, String> {
+pub fn list_blocking(provider: Option<String>, refresh: bool) -> Result<String, String> {
     let mut cmd = fastpick();
     cmd.args(["--list", "--json"]);
     if let Some(id) = provider.as_deref() {
@@ -94,5 +91,49 @@ pub fn version_blocking() -> Option<String> {
         None
     } else {
         Some(version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_blocking_does_not_panic() {
+        // fastpick may or may not be installed in the test environment.
+        // The contract is: absence is not an error — returns None gracefully,
+        // presence returns Some(non-empty version) — and it never panics.
+        let result = version_blocking();
+        match &result {
+            Some(v) => assert!(!v.is_empty(), "version must be non-empty when present"),
+            None => {} // not installed — expected on some machines
+        }
+    }
+
+    #[test]
+    fn list_blocking_does_not_panic() {
+        // fastpick may or may not be installed in the test environment.
+        // The contract is: it returns Ok with JSON, or Err with a message
+        // mentioning fastpick — and in either case it must not panic.
+        let result = list_blocking(None, false);
+        match &result {
+            Ok(s) => assert!(!s.is_empty(), "JSON payload must be non-empty on success"),
+            Err(e) => assert!(
+                e.contains("fastpick") || e.contains("exited"),
+                "error should mention fastpick or its exit status: {e}"
+            ),
+        }
+    }
+
+    #[test]
+    fn list_blocking_with_provider_does_not_panic() {
+        let result = list_blocking(Some("openai".to_string()), false);
+        match &result {
+            Ok(s) => assert!(!s.is_empty()),
+            Err(e) => assert!(
+                e.contains("fastpick") || e.contains("exited"),
+                "error should mention fastpick or its exit status: {e}"
+            ),
+        }
     }
 }

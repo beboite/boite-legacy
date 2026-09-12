@@ -48,3 +48,25 @@ pub fn now_ms() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn now_ms_returns_a_recent_epoch_millis() {
+        // now_ms should be close to the current system time in millis.
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let n = now_ms();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        assert!(n >= before, "now_ms({}) should be >= before({})", n, before);
+        assert!(n <= after, "now_ms({}) should be <= after({})", n, after);
+    }
+}
