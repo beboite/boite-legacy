@@ -10,6 +10,9 @@
 //! fresh, and goes quiet after [`CODEX_ROLLOUT_TTL`].
 
 use super::*;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use parking_lot::Mutex;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -156,13 +159,16 @@ pub fn find_codex_session_blocking(
     None
 }
 
-/// How much of a rollout's tail is scanned for the marker that ends a turn.
-///
-/// Generous, because the markers bracket a whole turn and everything the agent
-/// did lands in between. Not unbounded, because this runs on a timer: past this
-/// the answer is `Unknown` and the terminal's own rows decide, which for codex
-/// they can, since it prints an interrupt hint the whole time it works.
-const CODEX_TAIL_BYTES: u64 = 256 * 1024;
+#[derive(Default)]
+struct RolloutCursor {
+    offset: u64,
+    len: u64,
+    modified: Option<SystemTime>,
+    state: Option<&'static str>,
+}
+
+static ROLLOUT_CURSORS: LazyLock<Mutex<HashMap<PathBuf, RolloutCursor>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// How long a rollout can go untouched before an open turn stops counting.
 ///
@@ -208,7 +214,7 @@ fn codex_state_db() -> Option<PathBuf> {
 /// pushed over JSON-RPC to whoever spawned the process. A terminal someone else
 /// started exposes none of it, so the transcript is what is left: it brackets each
 /// turn with `task_started` and closes it with `task_complete` or `turn_aborted`.
-/// Reading the last of those backwards is the whole answer.
+/// The newest of those markers decides, regardless of how much output follows.
 ///
 /// `waiting` has no equivalent here. Codex knows the difference (its protocol has
 /// `waitingOnApproval` and `waitingOnUserInput`) but does not write approval
@@ -219,42 +225,50 @@ fn codex_state_db() -> Option<PathBuf> {
 /// Bounded by how long ago the file was written: an open turn is only an open
 /// turn while codex is still there to close it.
 fn codex_rollout_state(path: &Path) -> Option<&'static str> {
-    let mut file = fs::File::open(path).ok()?;
+    let mut cursors = ROLLOUT_CURSORS.lock();
+    // Match the thread-index query's ceiling, including sessions no longer open.
+    if cursors.len() >= 200 && !cursors.contains_key(path) {
+        cursors.clear();
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => { cursors.remove(path); return None; },
+    };
     let meta = file.metadata().ok()?;
     let len = meta.len();
-    let age = meta
-        .modified()
-        .ok()
-        .and_then(|m| SystemTime::now().duration_since(m).ok());
-    let from = len.saturating_sub(CODEX_TAIL_BYTES);
-    file.seek(SeekFrom::Start(from)).ok()?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).ok()?;
-    // Dropping the first line matters only when the window clipped one in half;
-    // a partial line cannot parse anyway, so this is about not scanning garbage.
-    let body = if from > 0 {
-        buf.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
-    } else {
-        &buf
-    };
-    for line in body.lines().rev() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(event) = serde_json::from_str::<CodexRolloutLine>(line) else {
-            continue;
-        };
-        if event.kind.as_deref() != Some("event_msg") {
-            continue;
-        }
-        match event.payload.and_then(|p| p.kind).as_deref() {
-            Some("task_started") => return bound_open_turn(age),
-            Some("task_complete") | Some("turn_aborted") => return Some("idle"),
-            _ => continue,
-        }
+    let modified = meta.modified().ok();
+    let age = modified.and_then(|m| SystemTime::now().duration_since(m).ok());
+    let cursor = cursors.entry(path.to_path_buf()).or_default();
+    if len < cursor.len || (len == cursor.len && modified != cursor.modified) {
+        *cursor = RolloutCursor::default();
     }
-    None
+    // Read history once, then only appended records. A fixed tail loses the
+    // opening marker as soon as a tool prints more than the tail can hold.
+    file.seek(SeekFrom::Start(cursor.offset)).ok()?;
+    let mut reader = BufReader::new(file.take(len - cursor.offset));
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).ok()? > 0 {
+        if let Ok(event) = serde_json::from_slice::<CodexRolloutLine>(&line) {
+            if event.kind.as_deref() == Some("event_msg") {
+                match event.payload.and_then(|p| p.kind).as_deref() {
+                    Some("task_started") => cursor.state = Some("busy"),
+                    Some("task_complete") | Some("turn_aborted") => cursor.state = Some("idle"),
+                    _ => {},
+                }
+            }
+        }
+        // The writer can stop anywhere, even inside UTF-8. Retry the final
+        // record on the next poll instead of consuming an incomplete JSON line.
+        if !line.ends_with(b"\n") { break; }
+        cursor.offset += line.len() as u64;
+        line.clear();
+    }
+    cursor.len = len;
+    cursor.modified = modified;
+    match cursor.state {
+        Some("busy") => bound_open_turn(age),
+        state => state,
+    }
 }
 
 /// Whether a turn left open in a rollout still counts, given the file's age.
@@ -356,6 +370,56 @@ pub(super) fn codex_turns(queries: &[TurnQuery]) -> Vec<AgentTurn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_codex_turn_keeps_its_start_marker() {
+        let path = std::env::temp_dir().join(format!("boite-codex-long-{}.jsonl", std::process::id()));
+        let mut log = String::from("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n");
+        log.push_str(&format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(300_000)));
+        fs::write(&path, &log).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+
+        log.push_str("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n");
+        fs::write(&path, &log).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("idle"));
+        log.push_str("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n");
+        fs::write(&path, &log).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn codex_cursor_retries_partial_utf8_and_resets_after_truncation() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("boite-codex-partial-{}.jsonl", std::process::id()));
+        let started = b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n";
+        fs::write(&path, started).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        assert_eq!(ROLLOUT_CURSORS.lock()[&path].offset, started.len() as u64);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"type\":\"response_item\",\"text\":\"\xc3").unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        assert_eq!(ROLLOUT_CURSORS.lock()[&path].offset, started.len() as u64);
+        file.write_all(b"\xa9\"}\ninvalid json\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n").unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("idle"));
+        drop(file);
+        fs::write(&path, b"{\"type\":\"session_meta\"}\n").unwrap();
+        assert_eq!(codex_rollout_state(&path), None);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cached_codex_activity_still_expires() {
+        let path = std::env::temp_dir().join(format!("boite-codex-cache-ttl-{}.jsonl", std::process::id()));
+        fs::write(&path, b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n").unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        let old = SystemTime::now() - CODEX_ROLLOUT_TTL - Duration::from_secs(1);
+        fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
+        assert_eq!(codex_rollout_state(&path), None);
+        assert_eq!(codex_rollout_state(&path), None);
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn codex_rollout_markers_decide_the_turn() {
