@@ -178,3 +178,7 @@ export function isLineFeed(
     (code === "KeyJ" || e.key === "j" || e.key === "J" || e.key === "\n" || e.key === "LineFeed");
   return opts.codex && isCtrlJ;
 }
+
+export function lineFeedSequence(codex: boolean): string {
+  return codex ? "\x1b[13;2u" : "\n";
+}

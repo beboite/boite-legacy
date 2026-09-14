@@ -160,8 +160,13 @@ which is the unit run and has its own config.
 ```
 bun run e2e                        # every scenario
 bun run e2e -- chat                # one of them, by filename
+BOITE_E2E_CODEX=1 bun run e2e -- codex-newline  # installed, initialized Codex CLI
 BOITE_E2E_SHOT=C:\tmp\chat.png bun run e2e
 ```
+
+The opt-in Codex newline scenario checks Shift+Enter, Ctrl+J and plain Enter
+against the installed CLI. It submits an unknown slash command, so no model
+turn starts.
 
 The client is `e2e/lib/devApp.ts`. It spawns `boite-mcp --dev --repo <this
 checkout>`, speaks MCP over its stdio and exposes `start`, `stop`, `inspect`,
