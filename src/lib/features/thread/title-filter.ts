@@ -167,6 +167,7 @@ export function isGenericTitle(
   cwd?: string | null,
 ): boolean {
   if (!title) return false;
+  if (/^<(?:image(?:\s|>)|\/image>|recommended_plugins(?:\s|>))/i.test(title.trim())) return true;
   const direct = cleanOscTitle(title, cwd).toLowerCase();
   const identity = direct.split(" | ", 1)[0].replace(/\s*[\u2801-\u28ff]+$/u, "").trim();
   if (/^renaming(?:\.{3}|\u2026)$/u.test(identity)) return true;

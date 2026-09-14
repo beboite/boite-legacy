@@ -102,6 +102,11 @@ const GENERIC_COMMAND_TOOLS: &[&str] = &[
 /// True for titles that merely restate the tool/shell name or a child command.
 pub fn is_generic_title(title: &str) -> bool {
     let direct = title.trim().to_lowercase();
+    if direct.starts_with("<image ") || direct.starts_with("<image>")
+        || direct.starts_with("</image>") || direct.starts_with("<recommended_plugins>")
+        || direct.starts_with("<recommended_plugins ") {
+        return true;
+    }
     let identity = direct.split(" | ").next().unwrap_or("");
     let identity = identity.trim_end_matches(|c: char| {
         c.is_whitespace() || ('\u{2801}'..='\u{28ff}').contains(&c)
@@ -188,6 +193,13 @@ mod codex_title_tests {
             assert!(is_generic_title(title), "{title}");
         }
         assert!(!is_generic_title("Renaming files safely | project"));
+    }
+
+    #[test]
+    fn rejects_saved_attachment_and_injected_prompt_titles() {
+        assert!(is_generic_title(r#"<image name=[Image #1] path="C:\Temp\shot.png">"#));
+        assert!(is_generic_title("<recommended_plugins>"));
+        assert!(!is_generic_title("Image upload support"));
     }
 
     #[test]

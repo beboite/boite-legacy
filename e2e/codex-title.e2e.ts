@@ -5,7 +5,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { app, completeSetup } from "./lib/harness";
 
-it("keeps a Codex name through rename progress and restart", async () => {
+it.each(["renaming... ⠋ | project", '<image name=[Image #1] path="C:/Temp/shot.png">'])("repairs %s and keeps the Codex name through restart", async (savedTitle) => {
   const dev = await app();
   await completeSetup(dev);
   const dir = mkdtempSync(path.join(tmpdir(), "boite-title-"));
@@ -22,16 +22,17 @@ it("keeps a Codex name through rename progress and restart", async () => {
       process.stdout.write('\\x1b]0;' + title + '\\x07' + '\\r\\nTITLE: ' + title + '\\r\\n');
     }, 100);
   `);
-  const id = "e2e-codex-title";
+  const id = savedTitle.startsWith("<image") ? "e2e-image-title" : "e2e-codex-title";
+  const projectId = `${id}-project`;
   await dev.js(`
     const invoke = window.__TAURI__.core.invoke;
     await invoke('records_project_create', { params: { project: {
-      id: 'e2e-title-project', name: 'Title regression', cwd: ${JSON.stringify(dir)},
+      id: '${projectId}', name: 'Title regression', cwd: ${JSON.stringify(dir)},
       icon: null, archived: false, worktrees: false
     } } });
     await invoke('records_thread_create', { params: { thread: {
-      id: '${id}', projectId: 'e2e-title-project', label: 'Codex #1',
-      title: 'renaming... ⠋ | project', cmd: 'node', args: ${JSON.stringify([fixture, control])},
+      id: '${id}', projectId: '${projectId}', label: 'Codex #1',
+      title: ${JSON.stringify(savedTitle)}, cmd: 'node', args: ${JSON.stringify([fixture, control])},
       iconKey: 'terminal', sessionId: null, status: 'idle', exitCode: null,
       ptyId: null, createdAt: Date.now(), keepAwake: true
     } } });
