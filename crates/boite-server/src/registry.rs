@@ -619,34 +619,30 @@ impl EventSink for ThreadSink {
                     self.live.status.lock().last_working = Some(Instant::now());
                     self.set_status(ThreadStatus::Running, None);
                 }
-                if !status::is_generic_title(&raw) {
-                    let clean = status::strip_leading_marker(&raw);
-                    if !clean.is_empty() && !status::is_project_dir_title(&clean, &self.live.cwd) {
-                        // Only on a real change. The agents re-emit their OSC
-                        // title every spinner frame with just the leading glyph
-                        // rotating, and strip_leading_marker collapses those to
-                        // the same string — so emitting unconditionally meant an
-                        // UPDATE (and a broadcast to every client) per frame per
-                        // thread. The desktop path already coalesces this; see
-                        // app/store.svelte.ts scheduleTitleFlush.
-                        let changed = {
-                            let mut current = self.live.title.lock();
-                            if *current != clean {
-                                *current = clean.clone();
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        // Checked only once the title actually moved, so a
-                        // superseded PTY cannot rename the thread that replaced
-                        // it and the lock stays off the per-frame path.
-                        if changed && self.is_current() {
-                            self.emit(AppEvent::ThreadTitle {
-                                thread_id: self.live.thread_id.clone(),
-                                title: clean,
-                            });
+                let clean = status::clean_osc_title(&raw, &self.live.cwd);
+                if !status::is_generic_title(&clean)
+                    && !clean.is_empty()
+                    && !status::is_project_dir_title(&clean, &self.live.cwd)
+                {
+                    // Spinner frames must not cause a database write and
+                    // broadcast when the conversation name has not changed.
+                    let changed = {
+                        let mut current = self.live.title.lock();
+                        if *current != clean {
+                            *current = clean.clone();
+                            true
+                        } else {
+                            false
                         }
+                    };
+                    // Checked only once the title actually moved, so a
+                    // superseded PTY cannot rename the thread that replaced
+                    // it and the lock stays off the per-frame path.
+                    if changed && self.is_current() {
+                        self.emit(AppEvent::ThreadTitle {
+                            thread_id: self.live.thread_id.clone(),
+                            title: clean,
+                        });
                     }
                 }
             }
@@ -1207,6 +1203,24 @@ mod status_tests {
 #[cfg(test)]
 mod sink_tests {
     use super::*;
+
+    #[test]
+    fn codex_rename_progress_never_replaces_the_conversation_name() {
+        let (shared, seen) = shared();
+        let mut current = live("t1", "pty-1");
+        Arc::get_mut(&mut current).unwrap().cwd = "/work/project".to_string();
+        shared.threads.lock().insert("t1".to_string(), current.clone());
+        let sink = ThreadSink { shared, live: current.clone() };
+        for title in ["renaming... ⠋ | project", "⠋ | project"] {
+            sink.send(PtyEvent::Title(title.to_string()));
+            assert_eq!(current.title(), None);
+        }
+        for title in ["Fix login ⠙ | project", "renaming... ⠹ | project", "Fix login ⠋ | project", "Fix login | project"] {
+            sink.send(PtyEvent::Title(title.to_string()));
+            assert_eq!(current.title().as_deref(), Some("Fix login"));
+        }
+        assert_eq!(seen.lock().iter().filter(|event| matches!(event, AppEvent::ThreadTitle { .. })).count(), 1);
+    }
 
     fn live(thread_id: &str, pty_id: &str) -> Arc<LiveThread> {
         let (output, _) = broadcast::channel(OUTPUT_CHANNEL_CAP);

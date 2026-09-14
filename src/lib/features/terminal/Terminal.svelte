@@ -72,7 +72,7 @@
   import { notifications } from "$lib/features/notifications/store.svelte";
   import { t } from "$lib/i18n/index.svelte";
   import { logger } from "$lib/shared/services/logger.svelte";
-  import { isGenericTitle } from "$lib/features/thread/title-filter";
+  import { cleanOscTitle, isGenericTitle } from "$lib/features/thread/title-filter";
   import { statusEngine } from "$lib/features/thread/statusEngine";
   import { SpawnTiming } from "$lib/features/thread/spawn-timing";
   import { longPress } from "$lib/shared/actions/longPress";
@@ -634,12 +634,6 @@
     }, FIT_SETTLE_MS);
   }
 
-  function cleanTitle(raw: string): string {
-    const m = raw.match(/[\p{L}\p{N}]/u);
-    if (!m || m.index === undefined) return raw.trim();
-    return raw.slice(m.index).trim();
-  }
-
   // A thread that has a PTY is connected, and this is where that becomes
   // visible: it leaves `idle` on the first byte or title that arrives. Which of
   // `ready` and `running` it then is belongs to the status engine, which reads
@@ -689,9 +683,9 @@
       const current = currentThread();
       if (!current || current.status === "stopped") return;
       syncAliveThread(current);
-      const cleaned = cleanTitle(event.value);
       const cwd =
         threadCwd(current, app.projects.find((p) => p.id === thread.projectId)) ?? undefined;
+      const cleaned = cleanOscTitle(event.value, cwd);
       if (cleaned && !isGenericTitle(cleaned, cwd)) {
         app.setThreadTitle(thread.id, cleaned);
       }

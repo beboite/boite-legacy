@@ -112,7 +112,7 @@ terminal back as text.
 
 ### The bridge wire, as pinned against the crate
 
-Read off `tauri-plugin-mcp-bridge` 0.12.0's source rather than its README, since
+Read off `tauri-plugin-mcp-bridge` 0.13.0's source rather than its README, since
 this is now written against rather than through a package that shipped with it.
 
 - **The port is discovered, never published.** The plugin's `base_port` is
@@ -139,9 +139,9 @@ this is now written against rather than through a package that shipped with it.
   Windows the answer comes back through a Tauri event rather than from the
   webview call, so a script that never returns hangs until the client's own
   timeout.
-- **`capture_native_screenshot` answers a base64 data URL**, PNG by default,
+- **`capture_native_screenshot` answers an object with `dataUrl`**, PNG by default,
   from WebView2's `CapturePreview`: the viewport only, and `maxWidth` resizes
-  it. The terminals render to a WebGL canvas, so what a screenshot shows of them
+  it. The client also accepts the bare string returned by 0.12. The terminals render to a WebGL canvas, so what a screenshot shows of them
   is a rectangle; `dev_inspect what=read` is their text.
 
 ## End to end

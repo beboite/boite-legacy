@@ -18,8 +18,8 @@
 //!   which proxies nine of the plugin's own IPC commands and nothing else.
 //! - `execute_js` wraps the script in an async function, so `return` works and
 //!   a promise is awaited. Its `data` is the returned value as JSON.
-//! - `capture_native_screenshot` answers a **base64 data URL**, PNG by
-//!   default, captured from WebView2's `CapturePreview`: the viewport only.
+//! - `capture_native_screenshot` answers an object with a `dataUrl` in 0.13,
+//!   or a bare data URL in 0.12, captured from WebView2's `CapturePreview`.
 //!
 //! The client is written by hand over a blocking `TcpStream` for the same
 //! reason `http.rs` exists: this binary is spawned once per agent session and
@@ -89,6 +89,14 @@ pub fn decode_data_url(url: &str) -> Result<(String, Vec<u8>), String> {
     }
     let bytes = base64_decode(payload)?;
     Ok((media, bytes))
+}
+
+fn decode_screenshot(data: &Value) -> Result<Vec<u8>, String> {
+    // 0.13 wraps the data URL with image and viewport dimensions.
+    let url = data.as_str()
+        .or_else(|| data.get("dataUrl").and_then(Value::as_str))
+        .ok_or("the bridge answered a screenshot without a data URL")?;
+    decode_data_url(url).map(|(_, bytes)| bytes)
 }
 
 /// An open connection to one bridge.
@@ -183,11 +191,7 @@ impl Bridge {
             args["maxWidth"] = json!(width);
         }
         let data = self.call("capture_native_screenshot", args)?;
-        let url = data
-            .as_str()
-            .ok_or("the bridge answered a screenshot that is not a string")?;
-        let (_, bytes) = decode_data_url(url)?;
-        Ok(bytes)
+        decode_screenshot(&data)
     }
 
     fn handshake(&mut self) -> Result<(), String> {
@@ -428,6 +432,9 @@ mod tests {
         let (media, bytes) = decode_data_url(url).expect("decoded");
         assert_eq!(media, "image/png");
         assert_eq!(bytes, vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        assert_eq!(decode_screenshot(&json!(url)).unwrap(), bytes);
+        assert_eq!(decode_screenshot(&json!({ "dataUrl": url, "imageWidth": 1 })).unwrap(), bytes);
+        assert!(decode_screenshot(&json!({ "dataUrl": null })).is_err());
     }
 
     #[test]
