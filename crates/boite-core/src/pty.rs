@@ -519,7 +519,7 @@ impl PtyManager {
         // try_send, never send: blocking here would re-introduce the UI freeze
         // the writer thread exists to prevent. A full queue means the child is
         // not reading, so the caller is told rather than parked.
-        tx.try_send(data.to_vec()).map_err(|e| match e {
+        tx.try_send(encode_pty_input(data).to_vec()).map_err(|e| match e {
             TrySendError::Full(_) => "pty write queue full: process not reading".to_string(),
             TrySendError::Disconnected(_) => "pty writer closed".to_string(),
         })
@@ -809,9 +809,36 @@ impl Perform for OscPerform {
     fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {}
 }
 
+fn encode_pty_input(data: &[u8]) -> &[u8] {
+    // ConPTY needs a Win32 input record to preserve Shift for native console
+    // readers. Translate a standalone CSI-u key only, never bytes inside a paste.
+    #[cfg(windows)]
+    if data == b"\x1b[13;2u" {
+        return b"\x1b[13;28;13;1;16;1_";
+    }
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modified_enter_reaches_the_host_keyboard_reader() {
+        let expected: &[u8] = if cfg!(windows) {
+            b"\x1b[13;28;13;1;16;1_"
+        } else {
+            b"\x1b[13;2u"
+        };
+        assert_eq!(encode_pty_input(b"\x1b[13;2u"), expected);
+    }
+
+    #[test]
+    fn ordinary_input_and_pasted_sequences_are_unchanged() {
+        for data in [b"\r".as_slice(), b"\n", b"hello", b"\x1b[200~\x1b[13;2u\x1b[201~"] {
+            assert_eq!(encode_pty_input(data), data);
+        }
+    }
 
     #[test]
     fn terminal_defaults_describe_xterm_js() {

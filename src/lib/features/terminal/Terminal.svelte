@@ -12,7 +12,7 @@
   import { themeById } from "$lib/theme/themes";
   import { terminalFontSize } from "$lib/theme/fonts";
   import { terminalRenderBudget, type RenderSlot } from "./render-budget";
-  import { encodeBarKey, encodeText, isLineFeed, wheelLines, type Press } from "./keys";
+  import { encodeBarKey, encodeText, isLineFeed, lineFeedSequence, wheelLines, type Press } from "./keys";
   import { installMobileInput } from "./mobile-input";
   import { Touches } from "./touch";
   import { registerTerminal, unregisterTerminal } from "$lib/shared/terminals";
@@ -139,7 +139,6 @@
   let fitSettleTimer: ReturnType<typeof setTimeout> | null = null;
   let lastInputAt = 0;
   const encoder = new TextEncoder();
-  const LF = new Uint8Array([0x0a]);
 
   // Output goes to xterm and nowhere else. Working detection used to keep its
   // own rolling window of these bytes; it reads the rows back off `term` now
@@ -838,7 +837,7 @@
     e.stopPropagation();
     if (ptyId) {
       lastInputAt = Date.now();
-      void ptyWrite(ptyId, LF).catch((err: unknown) => {
+      void ptyWrite(ptyId, encoder.encode(lineFeedSequence(thread.iconKey === "codex"))).catch((err: unknown) => {
         logger.warn("terminal", "the newline did not reach the pty", String(err));
       });
     }

@@ -5,11 +5,22 @@ import {
   encodeChar,
   encodeText,
   isLineFeed,
+  lineFeedSequence,
   wheelLines,
   NO_MODIFIERS,
 } from "./keys";
 
 const armed = (ctrl: boolean, alt: boolean) => ({ ctrl, alt });
+
+describe("prompt newline encoding", () => {
+  it("preserves Shift+Enter for Codex's native keyboard reader", () => {
+    expect(lineFeedSequence(true)).toBe("\x1b[13;2u");
+  });
+
+  it("keeps the PowerShell newline setting as a literal line feed", () => {
+    expect(lineFeedSequence(false)).toBe("\n");
+  });
+});
 
 describe("control characters", () => {
   it("reaches the C0 block from both cases", () => {
