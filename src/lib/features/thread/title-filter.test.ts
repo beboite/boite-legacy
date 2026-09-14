@@ -16,6 +16,11 @@ describe("cleanOscTitle", () => {
 });
 
 describe("isGenericTitle", () => {
+  it("drops saved Codex attachment and injected-context titles", () => {
+    expect(isGenericTitle('<image name="[Image #1]" path="C:\\Temp\\shot.png">')).toBe(true);
+    expect(isGenericTitle("<recommended_plugins>")).toBe(true);
+    expect(isGenericTitle("Image upload support")).toBe(false);
+  });
   it("rejects Codex title-generation placeholders, including persisted titles", () => {
     for (const title of ["renaming... ⠋ | project", "renaming\u2026 ⠙ | project", "renaming...", "⠋ | project"]) {
       expect(isGenericTitle(title, "/work/project"), title).toBe(true);

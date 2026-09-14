@@ -46,12 +46,34 @@ const CODEX_PROMPT_SKIP_PREFIXES: &[&str] = &[
     "<user_instructions",
     "<turn_context",
     "<INSTRUCTIONS",
+    "<recommended_plugins",
 ];
 
 const CODEX_TITLE_MAX_CHARS: usize = 60;
 
 fn codex_title_from_prompt(text: &str) -> Option<String> {
-    let trimmed = text.trim();
+    let mut trimmed = text.trim();
+    // Clipboard images arrive as text wrappers around a separate image item,
+    // or as one combined block. Neither the wrapper nor its label is a request.
+    loop {
+        if trimmed.starts_with("<image ") || trimmed.starts_with("<image>") {
+            let end = trimmed
+                .find("</image>")
+                .map(|at| at + "</image>".len())
+                .or_else(|| trimmed.find('>').map(|at| at + 1))?;
+            trimmed = trimmed[end..].trim_start();
+        } else if let Some(rest) = trimmed.strip_prefix("</image>") {
+            trimmed = rest.trim_start();
+        } else if let Some(rest) = trimmed.strip_prefix("[Image #") {
+            let end = rest.find(']')?;
+            if end == 0 || !rest[..end].chars().all(|c| c.is_ascii_digit()) {
+                break;
+            }
+            trimmed = rest[end + 1..].trim_start();
+        } else {
+            break;
+        }
+    }
     if trimmed.is_empty() {
         return None;
     }
@@ -370,6 +392,30 @@ pub(super) fn codex_turns(queries: &[TurnQuery]) -> Vec<AgentTurn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_attachments_do_not_become_prompt_titles() {
+        assert_eq!(codex_title_from_prompt(r#"<image name="[Image #1]" path="C:\Temp\shot.png">"#), None);
+        assert_eq!(codex_title_from_prompt("</image>"), None);
+        assert_eq!(codex_title_from_prompt("[Image #1] Fix the thread names"), Some("Fix the thread names".into()));
+        assert_eq!(codex_title_from_prompt("<image name=\"[Image #1]\">ignored</image> [Image #1] Fix the thread names"), Some("Fix the thread names".into()));
+        assert_eq!(codex_title_from_prompt("<recommended_plugins>injected setup</recommended_plugins>"), None);
+    }
+
+    #[test]
+    fn prompt_title_reads_past_separate_image_content_parts() {
+        let path = std::env::temp_dir().join(format!("boite-codex-image-title-{}.jsonl", std::process::id()));
+        let event = serde_json::json!({"type":"response_item","payload":{
+            "type":"message","role":"user","content":[
+                {"type":"input_text","text":"<image name=\"[Image #1]\" path=\"shot.png\">"},
+                {"type":"input_image","image_url":"data:image/png;base64,fixture"},
+                {"type":"input_text","text":"</image>"},
+                {"type":"input_text","text":"[Image #1] Fix the thread names"}
+            ]}});
+        fs::write(&path, event.to_string()).unwrap();
+        assert_eq!(read_codex_first_prompt(&path), Some("Fix the thread names".into()));
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn a_long_codex_turn_keeps_its_start_marker() {
