@@ -18,7 +18,7 @@
   import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
   import ProjectUsage from "./ProjectUsage.svelte";
   import ProjectStats from "./ProjectStats.svelte";
-  import { gitFailure, projectHealth, repoCardsVisible } from "./health";
+  import { gitFailure, gitFailureKey, projectHealth, repoCardsVisible } from "./health";
   import ThreadTurns from "$lib/features/thread/ThreadTurns.svelte";
   import ShortcutIcon from "$lib/shared/icons/ShortcutIcon.svelte";
   import { threadIconColor } from "$lib/features/fastpick/threadAccent";
@@ -153,7 +153,7 @@
       }
       if (lastGitError !== msg) {
         lastGitError = msg;
-        notifications.error(t("git.readFolderFailed"), undefined, msg);
+        notifications.error(t(gitFailureKey(kind)), undefined, msg);
       }
     });
   });

@@ -60,6 +60,7 @@
   } from "$lib/features/thread/session";
   import { decideSpawn, launchPlan } from "./launch";
   import { keyIntent } from "./key-intent";
+  import { clipboardHasNoText, CTRL_V } from "./paste";
   import { claimTypedPrompt } from "$lib/features/thread/typedPrompt";
   import { isTerminalReport } from "./reports";
   import { parsePromotion, PROMOTE_OSC } from "$lib/features/thread/promote";
@@ -722,11 +723,19 @@
     try {
       const text = await readText();
       if (text) target.paste(text);
+      else rawWrite(CTRL_V);
     } catch (err) {
-      // Said out loud, not only logged: Ctrl+V that quietly does nothing reads
-      // as a dead keybinding rather than as a clipboard the OS refused us.
-      logger.error("terminal", "clipboard read failed", String(err));
-      notifications.error(t("terminal.pasteFailed"));
+      if (clipboardHasNoText(err)) {
+        // A screenshot, usually, and codex and claude read it off the clipboard
+        // themselves once Ctrl+V reaches them. Answering with a toast instead
+        // is what made pasting an image into an agent impossible here.
+        rawWrite(CTRL_V);
+      } else {
+        // Said out loud, not only logged: Ctrl+V that quietly does nothing
+        // reads as a dead keybinding rather than as a clipboard the OS refused.
+        logger.error("terminal", "clipboard read failed", String(err));
+        notifications.error(t("terminal.pasteFailed"));
+      }
     } finally {
       focusTerminalSoon();
     }
@@ -811,6 +820,16 @@
       logger.error("terminal", `open link failed: ${uri}`, String(err));
       notifications.error(t("terminal.openLinkFailed"));
     }
+  }
+
+  // A plain click has to stay a click, or selecting text across a link opens a
+  // browser. Without saying so, a link that ignores it reads as a broken one.
+  function showLinkHint() {
+    container.title = t("terminal.openLinkHint", { key: isDeviceMacOS ? "Cmd" : "Ctrl" });
+  }
+
+  function hideLinkHint() {
+    container.removeAttribute("title");
   }
 
   function shouldSendLineFeed(e: KeyboardEvent, code: string): boolean {
@@ -1329,13 +1348,27 @@
       rightClickSelectsWord: false,
       allowTransparency: xtermAllowTransparency(),
       theme: xtermTheme(),
+      // OSC 8 hyperlinks, which codex prints for what it cites. xterm's own
+      // handler opens them through window.confirm and window.open, and neither
+      // works in this webview: the click did nothing, and the session it
+      // happened in lost its IPC transport right after.
+      linkHandler: {
+        activate: (event, uri) => void openTerminalLink(event, uri),
+        hover: showLinkHint,
+        leave: hideLinkHint,
+      },
     });
 
     fit = new FitAddon();
     term.loadAddon(fit);
-    term.loadAddon(new WebLinksAddon((event, uri) => {
-      void openTerminalLink(event, uri);
-    }));
+    term.loadAddon(
+      new WebLinksAddon(
+        (event, uri) => {
+          void openTerminalLink(event, uri);
+        },
+        { hover: showLinkHint, leave: hideLinkHint },
+      ),
+    );
     term.loadAddon(new Unicode11Addon());
     term.unicode.activeVersion = "11";
 

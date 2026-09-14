@@ -39,6 +39,14 @@ describe("gitFailure", () => {
     expect(gitFailure("HEAD detached at 5451a15")).toBe("detached");
   });
 
+  it("recognises a repository git does not trust, whatever its path says", () => {
+    expect(
+      gitFailure(
+        "fatal: detected dubious ownership in repository at 'D:/not a git repository/x'",
+      ),
+    ).toBe("dubiousOwnership");
+  });
+
   it("says nothing about anything else", () => {
     expect(gitFailure("git: command not found")).toBe("unknown");
   });
@@ -53,6 +61,7 @@ describe("gitFailureKey", () => {
     expect(gitFailureKey("pathMissing")).toBe("project.folderGone");
     expect(gitFailureKey("notARepo")).toBe("project.notARepo");
     expect(gitFailureKey("detached")).toBe("git.detachedHead");
+    expect(gitFailureKey("dubiousOwnership")).toBe("git.dubiousOwnership");
   });
 });
 
@@ -68,6 +77,7 @@ describe("refreshLogLevel", () => {
   it("still reports a failure nothing on the page explains", () => {
     expect(refreshLogLevel("unknown")).toBe("error");
     expect(refreshLogLevel("detached")).toBe("error");
+    expect(refreshLogLevel("dubiousOwnership")).toBe("error");
   });
 });
 
@@ -97,6 +107,17 @@ describe("projectHealth", () => {
 
   it("calls a folder that is there but has no repository notRepo", () => {
     expect(projectHealth(probe({ gitIsRepo: false }))).toBe("notRepo");
+  });
+
+  it("does not call a repository git refuses to open a plain folder", () => {
+    expect(
+      projectHealth(
+        probe({
+          gitIsRepo: false,
+          gitError: "fatal: detected dubious ownership in repository at 'D:/x'",
+        }),
+      ),
+    ).toBe("ok");
   });
 
   it("leaves a healthy repository alone", () => {

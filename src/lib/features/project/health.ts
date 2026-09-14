@@ -21,10 +21,15 @@ export type ProjectHealth = "checking" | "missing" | "notRepo" | "ok";
  * anything else, and it is what keeps a stderr line out of the page: unmapped
  * text goes behind a disclosure rather than into a paragraph.
  */
-export type GitFailure = "notARepo" | "pathMissing" | "detached" | "unknown";
+export type GitFailure =
+  | "notARepo"
+  | "pathMissing"
+  | "detached"
+  | "dubiousOwnership"
+  | "unknown";
 
 /**
- * Which of the four an error text is.
+ * Which of the five an error text is.
  *
  * Matched on the parts that are the same in every language. A Windows
  * `canonicalize` failure carries the OS message in the user's own locale and
@@ -33,6 +38,9 @@ export type GitFailure = "notARepo" | "pathMissing" | "detached" | "unknown";
  */
 export function gitFailure(text: string): GitFailure {
   const lower = text.toLowerCase();
+  // First, because the sentence ends on the repository's own path, and a path
+  // can say anything the checks below look for.
+  if (lower.includes("dubious ownership")) return "dubiousOwnership";
   if (
     lower.includes("os error 2") ||
     lower.includes("os error 3") ||
@@ -61,6 +69,7 @@ export function gitFailureKey(kind: GitFailure): MessageKey {
   if (kind === "pathMissing") return "project.folderGone";
   if (kind === "notARepo") return "project.notARepo";
   if (kind === "detached") return "git.detachedHead";
+  if (kind === "dubiousOwnership") return "git.dubiousOwnership";
   return "git.readFolderFailed";
 }
 
@@ -107,6 +116,12 @@ export function projectHealth(probe: HealthProbe): ProjectHealth {
   if (probe.folder === null) return "checking";
   if (probe.gitError && gitFailure(probe.gitError) === "notARepo") {
     return "notRepo";
+  }
+  // A repository git will not open is still a repository. Calling it "not a
+  // repository" offered to run `git init` over one; the cards stay, and each
+  // says why it is empty.
+  if (probe.gitError && gitFailure(probe.gitError) === "dubiousOwnership") {
+    return "ok";
   }
   if (!probe.gitLoaded) return "checking";
   return probe.gitIsRepo ? "ok" : "notRepo";

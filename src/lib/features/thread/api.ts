@@ -581,6 +581,9 @@ export async function launchChat(
  * session is already open.
  */
 function showThread(threadId: string): void {
+  // Called after the INSERT and `pilot.open` came back, and a close can land
+  // before either does. The window would be pointed at a row that is gone.
+  if (!app.hasThread(threadId)) return;
   app.activeThreadId = threadId;
   app.view = "terminal";
 }
@@ -1038,6 +1041,10 @@ export async function reloadThread(threadId: string, opts?: { silent?: boolean }
     ? ptyKill(previousPtyId, true).catch(() => {})
     : Promise.resolve();
   await Promise.all([release, kill]);
+  // A close can land while the kill waits, up to five seconds on a process that
+  // will not die. Going on from here would save the deleted row back and point
+  // the window at a thread that is no longer in the list.
+  if (!app.hasThread(threadId)) return;
 
   thread.ptyId = null;
   thread.status = "idle";

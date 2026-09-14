@@ -245,10 +245,14 @@ class GitStore {
 
     const task = (async () => {
       try {
-        const [info, entries] = await Promise.all([
-          gitRepoInfo(cwd),
-          gitStatus(cwd),
-        ]);
+        // A folder that was not a repository last time is asked whether it has
+        // become one before it is asked for its changes. `status` on a plain
+        // folder fails, and the bus logs every failure, so a dashboard left open
+        // on one wrote the same warning six times a minute.
+        const probed = previous.isRepo ? null : await gitRepoInfo(cwd);
+        const [info, entries] = probed
+          ? ([probed, probed.isRepo ? await gitStatus(cwd) : []] as const)
+          : await Promise.all([gitRepoInfo(cwd), gitStatus(cwd)]);
         const shouldLoadLog =
           options.reloadLog ||
           !previous.hasLog ||
@@ -298,6 +302,10 @@ class GitStore {
         // failure through `state.error` either way.
         const text = errorText(err);
         const kind = gitFailure(text);
+        // Asked together, a repository that stopped being one fails on `status`
+        // before `repoInfo` can say so. This is what sends the next pass down
+        // the one-at-a-time branch above.
+        if (kind === "notARepo") state.isRepo = false;
         if (this.lastFailure.get(scope) !== kind) {
           this.lastFailure.set(scope, kind);
           if (refreshLogLevel(kind) === "debug") {

@@ -194,10 +194,11 @@ class Client {
     const tid = bytesToUuid(buf.subarray(1, 17));
     const chunk = dec.decode(buf.subarray(17));
     this.outputs.set(tid, (this.outputs.get(tid) || "") + chunk);
-    // ConPTY asks the terminal where the cursor is (DSR, ESC[6n) and holds the
-    // child's output back until something answers. A real client answers
-    // through xterm; with no emulator here the whole test reads zero bytes on
-    // Windows and passes on Linux, which is the worst way for a gate to fail.
+    // A child may ask where the cursor is (DSR, ESC[6n) and hold its output
+    // back until something answers. A real client answers through xterm; with
+    // no emulator here such a child reads as zero bytes, and upstream
+    // portable-pty's ConPTY asked on every Windows spawn, so the gate read
+    // nothing on Windows and passed on Linux.
     if (chunk.includes("\x1b[6n")) this.ws.send(inputFrame(tid, "\x1b[1;1R"));
   }
   rpc(method, params = {}) {

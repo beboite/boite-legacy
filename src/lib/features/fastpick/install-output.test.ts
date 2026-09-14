@@ -29,7 +29,7 @@ describe("stripEscapes", () => {
 });
 
 describe("TerminalQueries", () => {
-  it("answers the cursor report ConPTY suspends the child on", () => {
+  it("answers the cursor report a child waits on", () => {
     // The one that mattered: unanswered, `cargo install` sat at zero CPU
     // having printed nothing else.
     expect(new TerminalQueries().answer(`${ESC}[6n`)).toBe(`${ESC}[1;1R`);
