@@ -614,18 +614,37 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
-                if let Some(runtime) = app_handle.try_state::<Arc<TelemetryRuntime>>() {
-                    runtime.on_session_end();
-                    runtime.shutdown();
-                }
-                let manager = app_handle.state::<PtyManager>();
-                manager.kill_all();
-                // The pilot children next, and for the same reason: one left
-                // behind holds a session file open, and the next launch resumes
-                // into a conversation two processes are writing.
-                commands::pilot::stop_all(app_handle);
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                shutdown_once(app_handle);
             }
+            // A Windows restart, shutdown or logoff. tao answers WM_ENDSESSION
+            // with LoopDestroyed and no ExitRequested before it, then keeps
+            // pumping messages with its runner stuck in Destroyed, and the next
+            // one panics with "cannot move state from Destroyed". So the
+            // children are stopped here, and the process leaves before tao
+            // dispatches anything else, the same exit its own run() takes.
+            tauri::RunEvent::Exit if shutdown_once(app_handle) => std::process::exit(0),
+            _ => {}
         });
+}
+
+static SHUT_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// True when this call stopped everything, false when an earlier one had.
+fn shutdown_once(app_handle: &tauri::AppHandle) -> bool {
+    if SHUT_DOWN.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    if let Some(runtime) = app_handle.try_state::<Arc<TelemetryRuntime>>() {
+        runtime.on_session_end();
+        runtime.shutdown();
+    }
+    let manager = app_handle.state::<PtyManager>();
+    manager.kill_all();
+    // The pilot children next, and for the same reason: one left behind holds
+    // a session file open, and the next launch resumes into a conversation two
+    // processes are writing.
+    commands::pilot::stop_all(app_handle);
+    true
 }

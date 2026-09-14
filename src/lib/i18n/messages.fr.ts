@@ -542,6 +542,7 @@ export const FR_MESSAGES: Record<MessageKey, string> = {
   "git.confirmDiscardLabel": "Annuler",
   "git.readFolderFailed": "Git n'a pas pu lire ce dossier.",
   "git.detachedHead": "Ce dépôt n'est sur aucune branche.",
+  "git.dubiousOwnership": "Git refuse de lire ce dépôt parce que son dossier appartient à un autre compte.",
 
   "branchDialog.uncommittedChanges": "Vous avez des modifications non validées",
   "branchDialog.descriptionCreating": "Créer",
@@ -1006,6 +1007,7 @@ export const FR_MESSAGES: Record<MessageKey, string> = {
   "terminal.paste": "Coller",
   "terminal.reloadThread": "Recharger le terminal",
   "terminal.openLinkFailed": "Impossible d'ouvrir le lien",
+  "terminal.openLinkHint": "{key}+clic pour ouvrir",
   "terminal.threadStopped": "Terminal arrêté",
   "terminal.finishedRelaunch": "Processus terminé. Cliquez pour relancer.",
   "terminal.spawnFailedRelaunch": "Lancement échoué. Cliquez pour relancer.",

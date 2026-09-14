@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { fileURLToPath } from "node:url";
 
@@ -21,7 +21,28 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["src/**/*.test.ts", "telemetry/src/**/*.test.ts"],
-    environment: "node",
+    setupFiles: ["./vitest.setup.ts"],
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "unit",
+          include: ["src/**/*.test.ts", "telemetry/src/**/*.test.ts"],
+          exclude: [...configDefaults.exclude, "src/**/*.svelte.test.ts"],
+          environment: "node",
+        },
+      },
+      {
+        // Under `node` a module is compiled for Svelte's server build, where
+        // `$effect` never runs, so a test that needs an effect passes without
+        // testing anything. Still node, still no DOM.
+        extends: true,
+        test: {
+          name: "runes",
+          include: ["src/**/*.svelte.test.ts"],
+          environment: "./vitest.client-env.mjs",
+        },
+      },
+    ],
   },
 });

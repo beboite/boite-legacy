@@ -81,7 +81,8 @@ export function applyControlEvent(app: AppState, ev: ControlEvent, envId?: strin
       const incoming = (ev.data as { thread?: Thread })?.thread;
       if (incoming?.id && !app.hasThread(incoming.id)) {
         if (workspace.isDynamic) incoming.origin = "remote";
-        app.threads.push(incoming);
+        // Assigned rather than pushed, for the reason given in `upsertThread`.
+        app.threads = [...app.threads, incoming];
         // Local `createThread` stamps here. A remote or MCP spawn is the same
         // fact: work started in this project, and a blank shell never reaches
         // `running` to say so later.

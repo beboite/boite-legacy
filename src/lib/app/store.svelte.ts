@@ -594,7 +594,13 @@ export class AppState {
    */
   upsertThread(thread: Thread): Promise<void> {
     const i = this.threads.findIndex((t) => t.id === thread.id);
-    if (i >= 0) this.threads[i] = thread;
+    // Assigned, never pushed or written through an index. Svelte re-runs a
+    // derived read from an effect teardown against the array from before the
+    // flush, and keeps what that run read: a pane unmounting after
+    // `removeThread` leaves the indexes above subscribed to the array the close
+    // replaced, and a push onto the live one never reaches them. The field is
+    // the dependency that survives, and only an assignment writes it.
+    if (i >= 0) this.threads = this.threads.map((t, j) => (j === i ? thread : t));
     else {
       // A row appearing is worth `info`: it is the start of everything a
       // reader following one terminal will then look for, and it happens
@@ -604,7 +610,7 @@ export class AppState {
         project: thread.projectId,
         cmd: thread.cmd,
       });
-      this.threads.push(thread);
+      this.threads = [...this.threads, thread];
     }
     return saveThread(thread);
   }

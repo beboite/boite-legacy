@@ -540,6 +540,7 @@ export const EN_MESSAGES = {
   "git.confirmDiscardLabel": "Discard",
   "git.readFolderFailed": "Git could not read this folder.",
   "git.detachedHead": "This repository is not on a branch.",
+  "git.dubiousOwnership": "Git refuses to read this repository because its folder belongs to another account.",
 
   "todo.noProject": "Pick a project to keep notes against it.",
   "todo.empty": "Nothing noted for this project.",
@@ -1013,6 +1014,7 @@ export const EN_MESSAGES = {
   "terminal.paste": "Paste",
   "terminal.reloadThread": "Reload thread",
   "terminal.openLinkFailed": "Failed to open link",
+  "terminal.openLinkHint": "{key}+click to open",
   "terminal.threadStopped": "Thread stopped",
   "terminal.finishedRelaunch": "Process finished. Click to relaunch.",
   "terminal.spawnFailedRelaunch": "Spawn failed. Click to relaunch.",

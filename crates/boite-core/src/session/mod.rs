@@ -115,7 +115,7 @@ fn pid_alive(pid: u32) -> bool {
 /// a handful of chains, and each of the three platforms pays for the enumeration
 /// and not for the walk.
 #[cfg(windows)]
-fn process_parents() -> std::collections::HashMap<u32, u32> {
+pub(crate) fn process_parents() -> std::collections::HashMap<u32, u32> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -143,7 +143,7 @@ fn process_parents() -> std::collections::HashMap<u32, u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_parents() -> std::collections::HashMap<u32, u32> {
+pub(crate) fn process_parents() -> std::collections::HashMap<u32, u32> {
     let mut out = std::collections::HashMap::new();
     let Ok(entries) = fs::read_dir("/proc") else {
         return out;
@@ -172,7 +172,7 @@ fn process_parents() -> std::collections::HashMap<u32, u32> {
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn process_parents() -> std::collections::HashMap<u32, u32> {
+pub(crate) fn process_parents() -> std::collections::HashMap<u32, u32> {
     let mut out = std::collections::HashMap::new();
     // No /proc on macOS, and the sysctl form needs a per-process call anyway.
     // One `ps` is the cheaper of the two and needs no unsafe block.

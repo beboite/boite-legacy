@@ -46,12 +46,12 @@ export function stripEscapes(text: string): string {
  * The questions a console program asks its terminal, and the shortest true
  * answer to each.
  *
- * **A PTY is a conversation, and a panel that only listens hangs the process.**
- * ConPTY opens by sending a cursor position report request, and the child stays
- * suspended until something answers: a `cargo install` watched here sat at zero
- * CPU forever, having printed nothing but the question. In a terminal pane this
- * never came up because xterm.js answers on its own, which is exactly why it
- * only showed up once this ran in the app.
+ * **A PTY is a conversation, and a panel that only listens can hang the process.**
+ * A program that asks where the cursor is waits for the answer. Upstream
+ * portable-pty had ConPTY itself ask before running any child, and a
+ * `cargo install` watched here sat at zero CPU forever, having printed nothing
+ * but the question. Boite's ConPTY no longer asks (`vendor/portable-pty`), but
+ * a child still can, and in a terminal pane xterm.js answers on its own.
  *
  * Four queries rather than an emulator. These are what a program asks before it
  * decides how to print, and anything else it asks it can live without: an
