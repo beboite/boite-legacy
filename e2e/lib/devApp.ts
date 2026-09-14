@@ -15,7 +15,8 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -150,8 +151,13 @@ export class DevApp {
       pending.reject(new Error("the dev client was stopped"));
     }
     this.#pending.clear();
-    child.stdin.end();
-    child.kill();
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise<void>((resolve) => {
+        child.once("close", () => resolve());
+        child.stdin.end();
+        child.kill();
+      });
+    }
   }
 
   /** `dev_window action=status`, as the TOON the tool answers. */
@@ -277,7 +283,11 @@ export class DevApp {
   }
 
   #spawnShim(): void {
-    const bin = devBinary();
+    // Tauri replaces target/debug/boite-mcp.exe when staging its sidecar.
+    // Windows cannot replace that file while this client is running it.
+    const source = devBinary();
+    const bin = path.join(path.dirname(source), `boite-mcp-e2e-${randomUUID()}${path.extname(source)}`);
+    copyFileSync(source, bin);
     const child = spawn(bin, ["--dev", "--repo", REPO_ROOT], {
       cwd: REPO_ROOT,
       stdio: ["pipe", "pipe", "pipe"],
@@ -288,6 +298,7 @@ export class DevApp {
     // Kept drained. A stderr nobody reads fills its pipe and blocks the shim.
     child.stderr.resume();
     child.on("exit", (code) => {
+      unlinkSync(bin);
       for (const pending of this.#pending.values()) {
         pending.reject(new Error(`boite-mcp --dev exited with ${code}`));
       }

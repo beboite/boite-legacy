@@ -102,6 +102,13 @@ const GENERIC_COMMAND_TOOLS: &[&str] = &[
 /// True for titles that merely restate the tool/shell name or a child command.
 pub fn is_generic_title(title: &str) -> bool {
     let direct = title.trim().to_lowercase();
+    let identity = direct.split(" | ").next().unwrap_or("");
+    let identity = identity.trim_end_matches(|c: char| {
+        c.is_whitespace() || ('\u{2801}'..='\u{28ff}').contains(&c)
+    });
+    if matches!(identity, "renaming..." | "renaming\u{2026}") {
+        return true;
+    }
     if direct.is_empty() {
         return false;
     }
@@ -151,6 +158,54 @@ pub fn is_project_dir_title(title: &str, cwd: &str) -> bool {
         return false;
     }
     title.trim().to_lowercase() == name.to_lowercase()
+}
+
+/// Codex decorates conversation names with rename progress and the cwd.
+pub fn clean_osc_title(title: &str, cwd: &str) -> String {
+    let mut clean = title.trim();
+    if let Some((name, directory)) = clean.rsplit_once(" | ") {
+        if is_project_dir_title(directory, cwd) {
+            clean = name.trim();
+        }
+    }
+    clean = clean.trim_end_matches(|c: char| {
+        c.is_whitespace() || ('\u{2801}'..='\u{28ff}').contains(&c)
+    });
+    strip_leading_marker(clean)
+}
+
+#[cfg(test)]
+mod codex_title_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_rename_progress() {
+        for title in [
+            "renaming... ⠋ | project",
+            "renaming\u{2026} ⠙ | project",
+            "renaming...",
+        ] {
+            assert!(is_generic_title(title), "{title}");
+        }
+        assert!(!is_generic_title("Renaming files safely | project"));
+    }
+
+    #[test]
+    fn strips_codex_progress_and_only_the_matching_directory() {
+        for frame in ["⠋", "⠙", "⠹", ""] {
+            assert_eq!(
+                clean_osc_title(&format!("Fix login {frame} | project"), "/work/project"),
+                "Fix login"
+            );
+        }
+        assert_eq!(
+            clean_osc_title("API | Fix login ⠋ | project", "C:\\work\\project"),
+            "API | Fix login"
+        );
+        assert_eq!(clean_osc_title("API | design", "/work/project"), "API | design");
+        assert_eq!(clean_osc_title("✻ Fix login", ""), "Fix login");
+        assert_eq!(clean_osc_title("⠋ | project", "/work/project"), "");
+    }
 }
 
 fn normalize_shell_path(title: &str) -> Option<String> {
