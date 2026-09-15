@@ -7,7 +7,7 @@ import { REPO_ROOT } from "./lib/devApp";
 it.skipIf(process.env.BOITE_E2E_CODEX !== "1")("inserts Codex prompt newlines without submitting", async () => {
   const dev = await app();
   await completeSetup(dev);
-  const id = "e2e-codex-newline";
+  const id = `e2e-codex-newline-${Date.now()}`;
   await dev.js(`
     const invoke = window.__TAURI__.core.invoke;
     await invoke('records_project_create', { params: { project: {
@@ -21,8 +21,14 @@ it.skipIf(process.env.BOITE_E2E_CODEX !== "1")("inserts Codex prompt newlines wi
     } } });
     location.reload(); return true;
   `);
+  await dev.waitFor("return !!window.__boite");
+  await completeSetup(dev);
   await dev.waitFor(`return !!document.querySelector('li[data-thread-id="${id}"] button[data-nav-row]')`);
   await dev.click(`li[data-thread-id="${id}"] button[data-nav-row]`);
+  await dev.waitFor(`
+    const { liveTerminal } = await import('/src/lib/shared/terminals.ts');
+    return window.__boite.thread('${id}').running && liveTerminal('${id}')?.options.disableStdin === false;
+  `);
   const screen = () => dev.js<string>(`
     const { liveTerminal, terminalText } = await import('/src/lib/shared/terminals.ts');
     const term = liveTerminal('${id}');
@@ -40,14 +46,28 @@ it.skipIf(process.env.BOITE_E2E_CODEX !== "1")("inserts Codex prompt newlines wi
     })); return true;
   `);
   await dev.waitForText(screen, text => text.includes("context") || text.includes("Context"));
+  await input("/model");
+  await dev.waitForText(screen, text => text.includes("/model  choose"));
+  await key("Enter", "Enter", 13);
+  await dev.waitForText(screen, text => text.includes("Select Model"));
+  await key("Escape", "Escape", 27);
+  await dev.waitForText(screen, text => !text.includes("Select Model"));
   await input("/boite-newline-regression");
   await dev.waitForText(screen, text => text.includes("/boite-newline-regression"));
+  await input("X");
+  await dev.waitForText(screen, text => text.includes("/boite-newline-regressionX"));
+  await key("Backspace", "Backspace", 8);
+  await dev.waitForText(screen, text => !text.includes("/boite-newline-regressionX"));
   await key("Enter", "Enter", 13, true);
   await input("SECOND-LINE");
   await dev.waitForText(screen, text => /boite-newline-regression\s*\n\s*SECOND-LINE/.test(text));
   await key("j", "KeyJ", 74, false, true);
   await input("THIRD-LINE");
   await dev.waitForText(screen, text => /SECOND-LINE\s*\n\s*THIRD-LINE/.test(text));
+  await input("X");
+  await dev.waitForText(screen, text => text.includes("THIRD-LINEX"));
+  await key("Backspace", "Backspace", 8);
+  await dev.waitForText(screen, text => !text.includes("THIRD-LINEX"));
   expect(await screen()).not.toContain("Unrecognized command");
   if (process.env.BOITE_E2E_SHOT) await dev.screenshot(process.env.BOITE_E2E_SHOT);
   await key("Enter", "Enter", 13);
