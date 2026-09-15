@@ -23,6 +23,14 @@ const CLAUDE_WORKING = [
 ];
 
 describe("detectWorkingOnScreen", () => {
+  it("reads Codex's status above the blank row separating its prompt", () => {
+    const prompt = ["", "> Ask Codex to do anything", "", "gpt-6  Context 38% used"];
+    const working = "• Monitoring builds and tests (5m 04s · esc to interrupt) · 1 background terminal running";
+    expect(detectWorkingOnScreen([working, ...prompt], "codex")).toBe(true);
+    expect(detectWorkingOnScreen([working, "", "• Tests passed.", ...prompt], "codex")).toBe(false);
+    expect(detectWorkingOnScreen(["• Worked for 5m 04s", ...prompt], "codex")).toBe(false);
+    expect(detectWorkingOnScreen(prompt, "codex")).toBe(false);
+  });
   it("reads claude's real layout as working and its absence as done", () => {
     // The regression: this exact screen read as finished while the agent was
     // visibly thinking, because the spinner sits further up than the window

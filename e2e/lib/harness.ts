@@ -69,73 +69,20 @@ export async function count(client: DevApp, selector: string): Promise<number> {
   );
 }
 
-/**
- * Get past the first-run wizard, and seed the shortcuts a launcher needs.
- *
- * A wiped database has `setupCompleted: false`, so the window opens on the
- * wizard rather than on the workspace. Skipping it leaves no shortcuts at all,
- * which is a launcher with no rows and therefore no Chat button, so the wizard
- * is walked rather than skipped: its agents step is what detects the CLIs and
- * writes them.
- */
+/** The CLI skips onboarding; tests seed only the locale and launcher they use. */
 export async function completeSetup(client: DevApp): Promise<void> {
-  const wizard = await count(client, "[role='dialog'][aria-modal='true']");
-  if (wizard === 0) return;
-  // English first, on the welcome screen. The window follows the machine's
-  // locale on a wiped database and this one is French, so every assertion that
-  // reads a label would be reading a translation of it.
-  await pickEnglish(client);
-  // Welcome, then the agents step, then the telemetry step, which finishes on
-  // its own choice rather than on the footer's button.
-  for (let i = 0; i < 6; i++) {
-    const done = await client.js<boolean>(
-      "return !document.querySelector(\"[role='dialog'][aria-modal='true']\")",
-    );
-    if (done) break;
-    await advanceWizard(client);
-    await sleep(400);
-  }
-  await client.waitFor(
-    "return !document.querySelector(\"[role='dialog'][aria-modal='true']\")",
-    20_000,
-  );
-  await sleep(500);
-}
-
-/** The welcome screen's language row, set to English. */
-async function pickEnglish(client: DevApp): Promise<void> {
-  await client.js<unknown>(`
-    const dialog = document.querySelector("[role='dialog'][aria-modal='true']");
-    if (!dialog) return { done: true };
-    const button = Array.from(dialog.querySelectorAll("button"))
-      .find((b) => (b.textContent || "").trim() === "English");
-    if (button) button.click();
-    return { picked: !!button };
+  await client.waitFor(`
+    const {settings}=await import('/src/lib/features/settings/store.svelte.ts');
+    return settings.ready;
   `);
-  await sleep(300);
-}
-
-/**
- * One step of the wizard.
- *
- * The telemetry step has no footer button: it finishes on the choice itself,
- * and the choice this harness makes is the anonymous one, so a test run never
- * turns enhanced telemetry on.
- */
-async function advanceWizard(client: DevApp): Promise<void> {
-  await client.js<unknown>(`
-    const dialog = document.querySelector("[role='dialog'][aria-modal='true']");
-    if (!dialog) return { done: true };
-    const decline = dialog.querySelector("button.no-btn");
-    if (decline) {
-      decline.click();
-      return { clicked: "no-btn" };
+  await client.js(`
+    const {settings}=await import('/src/lib/features/settings/store.svelte.ts');
+    if (!settings.state.setupCompleted) throw new Error('start the dev window with skipOnboarding=true');
+    settings.setLocale('en');
+    if (!settings.state.shortcuts.some(s=>s.iconKey==='claude')) {
+      await settings.addShortcut({label:'Claude',command:'claude',iconKey:'claude'});
     }
-    const buttons = Array.from(dialog.querySelectorAll("button"));
-    const primary = buttons.find((b) => b.className.includes("bg-foreground"))
-      || buttons[buttons.length - 1];
-    if (primary) primary.click();
-    return { clicked: primary ? primary.textContent.trim() : null };
+    return true;
   `);
 }
 

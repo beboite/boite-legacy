@@ -39,6 +39,7 @@ const SCENARIO_DIRS = [
 ];
 
 export interface StartOptions {
+  skipOnboarding?: boolean;
   /** Wipe the dev instance's database first. `dev.boite.dev` only, ever. */
   fresh?: boolean;
   /** Merged onto the app's environment, over what `start` sets itself. */
@@ -135,6 +136,7 @@ export class DevApp {
     const answer = await this.call("dev_window", {
       action: options.restart ? "restart" : "start",
       fresh: options.fresh ?? false,
+      skipOnboarding: options.skipOnboarding ?? true,
       env,
     });
     if (answer.isError) throw new Error(`dev_window start refused: ${answer.text}`);

@@ -56,6 +56,9 @@ impl Rows {
             .map_err(|e| format!("app_config_dir: {e}"))?
             .join("boite.db");
         let store = Arc::new(Store::attach(&path)?);
+        if std::env::args().skip(1).any(|arg| arg == "--skip-onboarding") {
+            store.skip_onboarding()?;
+        }
         // First attach is once per app start, and it is before the window has
         // read a single row: exactly where the last run's marks have to be
         // settled, or the boot that reads them would draw a thread that was

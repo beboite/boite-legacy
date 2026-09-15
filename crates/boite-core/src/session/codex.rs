@@ -7,7 +7,8 @@
 //!
 //! A rollout that stops being written to is not a turn that ended: the process
 //! may have died mid-answer. So an open marker only counts while the file is
-//! fresh, and goes quiet after [`CODEX_ROLLOUT_TTL`].
+//! fresh, and goes quiet after [`CODEX_ROLLOUT_TTL`]. Event timestamps measure
+//! freshness because Windows may defer the file's write time until close.
 
 use super::*;
 use std::collections::HashMap;
@@ -218,12 +219,13 @@ struct RolloutCursor {
     len: u64,
     modified: Option<SystemTime>,
     state: Option<&'static str>,
+    activity_at: Option<SystemTime>,
 }
 
 static ROLLOUT_CURSORS: LazyLock<Mutex<HashMap<PathBuf, RolloutCursor>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// How long a rollout can go untouched before an open turn stops counting.
+/// How long a rollout can go without an event before an open turn stops counting.
 ///
 /// Nothing else ever ages a codex answer out. Claude's registry is filtered by
 /// `pid_alive` and opencode's rows close themselves, but a codex killed, crashed
@@ -278,6 +280,10 @@ fn codex_state_db() -> Option<PathBuf> {
 /// Bounded by how long ago the file was written: an open turn is only an open
 /// turn while codex is still there to close it.
 fn codex_rollout_state(path: &Path) -> Option<&'static str> {
+    codex_rollout_state_at(path, SystemTime::now())
+}
+
+fn codex_rollout_state_at(path: &Path, now: SystemTime) -> Option<&'static str> {
     let mut cursors = ROLLOUT_CURSORS.lock();
     // Match the thread-index query's ceiling, including sessions no longer open.
     if cursors.len() >= 200 && !cursors.contains_key(path) {
@@ -290,7 +296,6 @@ fn codex_rollout_state(path: &Path) -> Option<&'static str> {
     let meta = file.metadata().ok()?;
     let len = meta.len();
     let modified = meta.modified().ok();
-    let age = modified.and_then(|m| SystemTime::now().duration_since(m).ok());
     let cursor = cursors.entry(path.to_path_buf()).or_default();
     if len < cursor.len || (len == cursor.len && modified != cursor.modified) {
         *cursor = RolloutCursor::default();
@@ -302,6 +307,12 @@ fn codex_rollout_state(path: &Path) -> Option<&'static str> {
     let mut line = Vec::new();
     while reader.read_until(b'\n', &mut line).ok()? > 0 {
         if let Ok(event) = serde_json::from_slice::<CodexRolloutLine>(&line) {
+            if let Some(at) = event.timestamp.as_deref().and_then(parse_iso_ms)
+                .and_then(|ms| u64::try_from(ms).ok())
+                .and_then(|ms| SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(ms)))
+            {
+                cursor.activity_at = Some(cursor.activity_at.map_or(at, |previous| previous.max(at)));
+            }
             if event.kind.as_deref() == Some("event_msg") {
                 match event.payload.and_then(|p| p.kind).as_deref() {
                     Some("task_started") => cursor.state = Some("busy"),
@@ -318,6 +329,9 @@ fn codex_rollout_state(path: &Path) -> Option<&'static str> {
     }
     cursor.len = len;
     cursor.modified = modified;
+    // Windows can retain the old LastWriteTime until Codex closes its writer.
+    // Event timestamps advance while that handle stays open, including on boot.
+    let age = cursor.activity_at.or(modified).and_then(|at| now.duration_since(at).ok());
     match cursor.state {
         Some("busy") => bound_open_turn(age),
         state => state,
@@ -339,6 +353,7 @@ fn bound_open_turn(age: Option<Duration>) -> Option<&'static str> {
 
 #[derive(Deserialize)]
 struct CodexRolloutLine {
+    timestamp: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
     payload: Option<CodexRolloutPayload>,
@@ -423,6 +438,31 @@ pub(super) fn codex_turns(queries: &[TurnQuery]) -> Vec<AgentTurn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_activity_uses_event_time_when_windows_keeps_the_write_time_old() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("boite-codex-write-time-{}.jsonl", std::process::id()));
+        let now = SystemTime::UNIX_EPOCH + Duration::from_millis(parse_iso_ms("2026-01-01T12:00:00Z").unwrap() as u64);
+        fs::write(&path, concat!(
+            "{\"timestamp\":\"2026-01-01T10:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n",
+            "{\"timestamp\":\"2026-01-01T12:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\"}}\n"
+        )).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let old = now - CODEX_ROLLOUT_TTL * 2;
+        file.set_modified(old).unwrap();
+        assert_eq!(codex_rollout_state_at(&path, now), Some("busy"));
+        assert_eq!(codex_rollout_state_at(&path, now + CODEX_ROLLOUT_TTL), None);
+        file.write_all(b"{\"timestamp\":\"2026-01-01T12:31:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\"}}\n").unwrap();
+        file.set_modified(old).unwrap();
+        let later = now + Duration::from_secs(31 * 60);
+        assert_eq!(codex_rollout_state_at(&path, later), Some("busy"));
+        file.write_all(b"{\"timestamp\":\"2026-01-01T12:31:01Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n").unwrap();
+        file.set_modified(old).unwrap();
+        assert_eq!(codex_rollout_state_at(&path, later), Some("idle"));
+        drop(file);
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn native_name_arriving_later_is_read_without_using_the_prompt_title() {

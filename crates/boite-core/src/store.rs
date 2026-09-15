@@ -1411,6 +1411,17 @@ impl Store {
         Ok(())
     }
 
+    /// Used at host startup, before clients can load or change settings.
+    pub fn skip_onboarding(&self) -> Result<(), String> {
+        let mut settings = self.load_settings()?;
+        let object = settings.as_object_mut().ok_or("settings must be an object")?;
+        if object.get("setupCompleted") == Some(&serde_json::Value::Bool(true)) {
+            return Ok(());
+        }
+        object.insert("setupCompleted".into(), serde_json::Value::Bool(true));
+        self.save_settings(&settings)
+    }
+
     /// Cosmetic workspace identity (name + color), shared by every connected
     /// device so a rename on one phone shows up on the laptop. Stored in the
     /// settings k/v under its own key; clients fetch it via workspace.info.
@@ -2093,6 +2104,24 @@ fn normalize_todo_state(raw: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skipping_onboarding_preserves_settings_and_survives_reopening() {
+        let (store, dir) = scratch_store("skip-onboarding");
+        assert_eq!(store.load_settings().unwrap(), serde_json::json!({}));
+        store.skip_onboarding().unwrap();
+        assert_eq!(store.load_settings().unwrap(), serde_json::json!({"setupCompleted":true}));
+        let settings = serde_json::json!({"setupCompleted":false,"themeMode":"light","shortcuts":[{"id":"own","command":"sh"}]});
+        store.save_settings(&settings).unwrap();
+        store.skip_onboarding().unwrap();
+        store.skip_onboarding().unwrap();
+        let mut expected = settings;
+        expected["setupCompleted"] = true.into();
+        assert_eq!(store.load_settings().unwrap(), expected);
+        drop(store);
+        let reopened = Store::open(&dir.0.join("boite.db")).unwrap();
+        assert_eq!(reopened.load_settings().unwrap(), expected);
+    }
 
     // Guards the migration transaction: user_version must be committed with the
     // statements it gates, or a reopen replays applied ALTERs and dies on

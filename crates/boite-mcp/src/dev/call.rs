@@ -72,7 +72,11 @@ fn window_call(dev: &Dev, args: &Value) -> Result<String, String> {
                 window.stop();
             }
             let wiped = if fresh { window.wipe_database()? } else { Vec::new() };
-            let report = window.start(&env)?;
+            let skip_onboarding = args
+                .get("skipOnboarding")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let report = window.start(&env, skip_onboarding)?;
             let mut w = Toon::new();
             w.field("state", "up")
                 .field("pid", &report.pid.to_string())

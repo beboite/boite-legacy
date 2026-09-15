@@ -153,6 +153,12 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    if args.iter().any(|arg| arg == "--skip-onboarding") {
+        if let Err(e) = store.skip_onboarding() {
+            eprintln!("[boite-server] skipping onboarding failed: {e}");
+            std::process::exit(1);
+        }
+    }
     // Before anything can read a row. Every PTY this process will own is one it
     // spawns itself, so a row still naming a process names one of the last
     // server's, and a client connecting now has to be told that thread was cut
