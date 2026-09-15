@@ -19,9 +19,9 @@ use parking_lot::Mutex;
 pub struct CodexSessionHit {
     pub id: String,
     pub modified_ms: i64,
-    /// First real user prompt, used as the thread title: codex never emits a
-    /// conversation summary in its OSC title (only spinner/project/model/...).
+    /// First real user prompt, used only until Codex supplies a native name.
     pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +50,28 @@ const CODEX_PROMPT_SKIP_PREFIXES: &[&str] = &[
 ];
 
 const CODEX_TITLE_MAX_CHARS: usize = 60;
+
+fn read_codex_name(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+    // Older schemas have no name column. Their title is the first prompt,
+    // so it must never be mistaken for a generated or manually assigned name.
+    conn.query_row("SELECT name FROM threads WHERE id = ?1", [id], |row| {
+        row.get::<_, Option<String>>(0)
+    }).ok().flatten().map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+fn read_known_codex_session(conn: &rusqlite::Connection, id: &str, cwd: &str) -> Option<CodexSessionHit> {
+    let (recorded_cwd, rollout): (String, String) = conn.query_row(
+        "SELECT cwd, rollout_path FROM threads WHERE id = ?1", [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).ok()?;
+    if normalize(recorded_cwd.strip_prefix(r"\\?\").unwrap_or(&recorded_cwd))
+        != normalize(cwd.strip_prefix(r"\\?\").unwrap_or(cwd)) { return None; }
+    let modified_ms = fs::metadata(&rollout).ok().and_then(|m| m.modified().ok())
+        .map(ms_since_epoch).unwrap_or(0);
+    Some(CodexSessionHit {
+        id: id.to_string(), modified_ms, title: None, name: read_codex_name(conn, id),
+    })
+}
 
 fn codex_title_from_prompt(text: &str) -> Option<String> {
     let mut trimmed = text.trim();
@@ -151,7 +173,14 @@ pub fn find_codex_session_blocking(
     cwd: String,
     after_unix_ms: i64,
     exclude: &HashSet<String>,
+    session_id: Option<&str>,
 ) -> Option<CodexSessionHit> {
+    let conn = codex_state_db().and_then(|path| open_readonly(&path).ok());
+    // An already bound thread asks by identity, even while idle. A newer
+    // sibling transcript must not hide its name or get attributed to it.
+    if let Some(id) = session_id {
+        return read_known_codex_session(conn.as_ref()?, id, &cwd);
+    }
     let home = dirs::home_dir()?;
     let sessions_dir = home.join(".codex").join("sessions");
     if !sessions_dir.is_dir() {
@@ -170,10 +199,12 @@ pub fn find_codex_session_blocking(
         if let Some((id, scwd)) = read_codex_session_meta(&path) {
             if normalize(&scwd) == target && !exclude.contains(&id) {
                 let title = read_codex_first_prompt(&path);
+                let name = conn.as_ref().and_then(|conn| read_codex_name(conn, &id));
                 return Some(CodexSessionHit {
                     id,
                     modified_ms,
                     title,
+                    name,
                 });
             }
         }
@@ -392,6 +423,44 @@ pub(super) fn codex_turns(queries: &[TurnQuery]) -> Vec<AgentTurn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_name_arriving_later_is_read_without_using_the_prompt_title() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT, name TEXT, title TEXT);
+            INSERT INTO threads VALUES ('own', NULL, 'please fix this');
+            INSERT INTO threads VALUES ('other', 'Other task', 'other prompt');").unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), None);
+        conn.execute("UPDATE threads SET name = 'Fix Codex threads' WHERE id = 'own'", []).unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), Some("Fix Codex threads".into()));
+        conn.execute("UPDATE threads SET name = 'Updated task' WHERE id = 'own'", []).unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), Some("Updated task".into()));
+        assert_eq!(read_codex_name(&conn, "missing"), None);
+    }
+
+    #[test]
+    fn old_codex_databases_without_names_remain_readable() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT, title TEXT);
+            INSERT INTO threads VALUES ('own', 'first prompt');").unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), None);
+    }
+
+    #[test]
+    fn known_codex_name_is_read_while_idle_without_selecting_a_sibling() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r"CREATE TABLE threads (id TEXT, name TEXT, cwd TEXT, rollout_path TEXT);
+            INSERT INTO threads VALUES ('own', 'Original name', '\\?\D:\project', 'missing-rollout.jsonl');
+            INSERT INTO threads VALUES ('newer', 'Sibling name', 'D:\project', 'missing-rollout.jsonl');").unwrap();
+        let hit = read_known_codex_session(&conn, "own", "d:/project").unwrap();
+        assert_eq!(hit.id, "own");
+        assert_eq!(hit.modified_ms, 0);
+        assert_eq!(hit.name.as_deref(), Some("Original name"));
+        conn.execute("UPDATE threads SET name = 'Renamed task' WHERE id = 'own'", []).unwrap();
+        assert_eq!(read_known_codex_session(&conn, "own", "d:/project").unwrap().name.as_deref(), Some("Renamed task"));
+        assert!(read_known_codex_session(&conn, "missing", "d:/project").is_none());
+        assert!(read_known_codex_session(&conn, "own", "d:/other").is_none());
+    }
 
     #[test]
     fn image_attachments_do_not_become_prompt_titles() {

@@ -85,6 +85,7 @@ pub enum Sessions {
         cwd: String,
         after_unix_ms: i64,
         exclude_ids: Vec<String>,
+        session_id: Option<String>,
         own: Own,
     },
     /// Sessions claude still has open. Clients ask before replaying a captured
@@ -198,6 +199,7 @@ impl Sessions {
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0),
                 exclude_ids: str_list(params, "excludeIds"),
+                session_id: opt_str_param(params, "sessionId"),
                 own: Own::Pty(opt_str_param(params, "ptyId")),
             },
             "session.liveClaude" => Sessions::LiveClaude,
@@ -427,6 +429,7 @@ impl Sessions {
                 cwd,
                 after_unix_ms,
                 exclude_ids,
+                session_id,
                 own,
             } => {
                 let exclude = session::build_exclude(Some(exclude_ids));
@@ -448,6 +451,7 @@ impl Sessions {
                         cwd,
                         after_unix_ms,
                         &exclude,
+                        session_id.as_deref(),
                     )),
                     "opencode" => value_of(session::find_opencode_session_blocking(
                         cwd,

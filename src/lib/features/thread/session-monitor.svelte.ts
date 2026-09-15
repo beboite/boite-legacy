@@ -5,7 +5,9 @@ import { notifications } from "$lib/features/notifications/store.svelte";
 import { logger } from "$lib/shared/services/logger.svelte";
 import { t } from "$lib/i18n/index.svelte";
 import { statusEngine } from "./statusEngine";
-import type { SessionDetector } from "./session";
+import type { SessionDetector, SessionHit } from "./session";
+import { sessionTitleUpdate } from "./session-title";
+import { isRenamed } from "./renamed";
 import type { Thread } from "$lib/types";
 
 const SESSION_SCAN_INTERVAL_MS = 12_000;
@@ -83,10 +85,9 @@ export async function persistSessionId(
   }
 }
 
-// Prompt-derived titles (codex never emits a descriptive OSC title) only fill
-// an unnamed thread; an OSC-set or user-visible title always wins.
-function applySessionTitle(thread: Thread, title: string | null | undefined) {
-  if (!title || thread.title) return;
+function applySessionTitle(thread: Thread, hit: SessionHit) {
+  const title = sessionTitleUpdate(thread.sessionId, thread.title, hit, isRenamed(thread.id));
+  if (!title) return;
   app.setThreadTitle(thread.id, title);
   // Remote: setThreadTitle skips persistence (the server owns OSC titles),
   // but this title only exists client-side, so persist it explicitly.
@@ -264,7 +265,7 @@ export function startSessionMonitor(opts: {
       }
       deferrals = 0;
       if (id === thread.sessionId) {
-        applySessionTitle(thread, hit.title);
+        applySessionTitle(thread, hit);
         logger.debug(
           "session",
           `${thread.label}: detector returned current session, skip`,
@@ -332,7 +333,7 @@ export function startSessionMonitor(opts: {
         },
       );
       await persistSessionId(thread, id, cwd);
-      applySessionTitle(thread, hit.title);
+      applySessionTitle(thread, hit);
       return false;
     } catch (err) {
       logger.error("session", `detect failed for ${thread.label}`, String(err));
@@ -350,7 +351,7 @@ export function startSessionMonitor(opts: {
   const probeLiveness = async () => {
     if (livenessInFlight) return;
     const thread = app.threadById(threadId);
-    if (thread && !backendFor(thread.origin).caps.clientStatus) return;
+    if (thread && kind !== "codex" && !backendFor(thread.origin).caps.clientStatus) return;
     if (
       !thread ||
       !thread.sessionId ||
@@ -367,11 +368,18 @@ export function startSessionMonitor(opts: {
     try {
       const hit = await detector(
         cwd,
-        Date.now() - TRANSCRIPT_LIVENESS_WINDOW_MS,
+        kind === "codex" ? 0 : Date.now() - TRANSCRIPT_LIVENESS_WINDOW_MS,
         excludeOthers,
         targetPtyId,
+        kind === "codex" ? ownId : undefined,
       );
-      if (hit?.id === ownId) statusEngine.markTranscriptActive(threadId);
+      if (stopped || thread.sessionId !== ownId || !opts.isPtyCurrent(targetPtyId)) return;
+      if (hit?.id === ownId) {
+        applySessionTitle(thread, hit);
+        if (kind !== "codex" || (hit.mtimeMs != null && hit.mtimeMs >= Date.now() - TRANSCRIPT_LIVENESS_WINDOW_MS)) {
+          statusEngine.markTranscriptActive(threadId);
+        }
+      }
     } catch {
       // Best-effort; the capture scan already logs detector failures.
     } finally {

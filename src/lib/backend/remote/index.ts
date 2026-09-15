@@ -87,6 +87,7 @@ interface RawSession {
   modifiedMs?: number;
   title?: string | null;
   ownPid?: boolean;
+  name?: string | null;
 }
 
 function normalizeSession(raw: unknown): SessionHit | null {
@@ -98,6 +99,7 @@ function normalizeSession(raw: unknown): SessionHit | null {
     id: r.id,
     mtimeMs: typeof r.modifiedMs === "number" ? r.modifiedMs : null,
     title: typeof r.title === "string" && r.title ? r.title : null,
+    name: typeof r.name === "string" && r.name ? r.name : null,
     // Absent from a server too old to send it, which reads as "not confirmed"
     // and leaves the attribution guess in charge, exactly as before.
     ownPid: r.ownPid === true,
@@ -571,8 +573,8 @@ export class RemoteBackend implements Backend {
       // ptyId names a PTY the server owns, so it resolves the pid on its side.
       // An older server ignores the extra param and keeps skipping every live
       // session, which is the behaviour it had before.
-      find: (kind, cwd, afterUnixMs, excludeIds, ptyId) =>
-        rpc("session.find", { kind, cwd, afterUnixMs, excludeIds, ptyId: ptyId ?? null }).then(
+      find: (kind, cwd, afterUnixMs, excludeIds, ptyId, sessionId) =>
+        rpc("session.find", { kind, cwd, afterUnixMs, excludeIds, ptyId: ptyId ?? null, sessionId: sessionId ?? null }).then(
           (r) => normalizeSession(r.session),
         ),
       // The agents run on the server, so that is where the registry lives. An

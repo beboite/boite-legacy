@@ -161,12 +161,24 @@ which is the unit run and has its own config.
 bun run e2e                        # every scenario
 bun run e2e -- chat                # one of them, by filename
 BOITE_E2E_CODEX=1 bun run e2e -- codex-newline  # installed, initialized Codex CLI
+BOITE_E2E_CODEX=1 bun run e2e -- codex-native-name
 BOITE_E2E_SHOT=C:\tmp\chat.png bun run e2e
 ```
 
 The opt-in Codex newline scenario checks Shift+Enter, Ctrl+J and plain Enter
 against the installed CLI. It submits an unknown slash command, so no model
 turn starts.
+
+The native-name scenario checks late names, idle refresh and manual renames.
+Its opt-in case sends one short prompt to the installed Codex CLI and checks
+that the sidebar matches the name Codex generated.
+
+Codex 0.154.0 can fail to generate titles with `invalid transport` for an MCP
+server defined only through `-c`. Its temporary title thread replaces those
+overrides with `enabled = false`, losing the transport definition. Registering
+the same sidecar in Codex's own configuration preserves that definition:
+`codex mcp add boite -- "<absolute path to boite-mcp executable>"`.
+Boite does not register it globally on the user's behalf.
 
 The client is `e2e/lib/devApp.ts`. It spawns `boite-mcp --dev --repo <this
 checkout>`, speaks MCP over its stdio and exposes `start`, `stop`, `inspect`,
