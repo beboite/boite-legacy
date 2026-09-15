@@ -15,6 +15,16 @@ bun run dev:isolated
 A separate **"Boite Dev"** window on port `1430` under the `dev.boite.dev`
 identifier, with its own SQLite file and an empty project list.
 
+Skip the first-run wizard when preparing test data:
+
+```bash
+bun run dev:isolated -- -- -- --skip-onboarding
+```
+
+The desktop executable and `boite-server` also accept `--skip-onboarding`.
+It persists `setupCompleted: true` in that instance's settings and preserves
+existing shortcuts and preferences. Add launchers through Settings when needed.
+
 ## The dev MCP (dev only)
 
 `dev:isolated` also enables the `mcp-bridge` feature, so an agent can drive that
@@ -61,6 +71,10 @@ working directory; `--port` is the isolated config's vite port and defaults to
 | `dev_logs` | the `logs` tool pointed at `%LOCALAPPDATA%\dev.boite.dev\logs`, both actions reading the files |
 | `dev_db` | one read-only statement on `%APPDATA%\dev.boite.dev\boite.db` |
 | `dev_scenario` | `list` the files in `e2e/`, `run` one or all of them through `bun run e2e` |
+
+`dev_window` skips onboarding by default. Pass `skipOnboarding: false` with
+`fresh: true` to test the wizard. The end-to-end client accepts the same option;
+ordinary scenarios seed their locale and a Claude launcher without wizard clicks.
 
 `dev_scenario` is the sixth, and it lists and runs the files in `e2e/` through
 `bun run e2e`. A run starts a window of its own, so it refuses while this

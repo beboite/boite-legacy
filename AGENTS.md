@@ -132,7 +132,10 @@ else, and `boite-core/src/session.rs` reduces the four to the shape
 - codex pushes its status over JSON-RPC to whoever spawned it, so a terminal a
   human started exposes none of it. Its rollout is read instead, every turn
   opening on `task_started` and closing on `task_complete` or `turn_aborted`,
-  with `~/.codex/state_*.sqlite` naming the file.
+  with `~/.codex/state_*.sqlite` naming the file. Freshness comes from the latest
+  event timestamp: Windows can keep the file's old modification time while
+  Codex holds its writer open. Modification time is only a fallback for older
+  records without timestamps.
 - opencode serves `GET /session/status`, but a plain TUI runs its server in a
   worker thread and binds no port. Its database answers: an assistant message
   gains `time.completed` when its turn ends.
@@ -163,6 +166,9 @@ for as long as the agent prints anything.
 - How far up to read is decided by the screen: the bottom run with no blank row
   in it. A fixed count was calibrated on a bare claude, and a statusline plus a
   banner push the spinner out of it.
+  Codex separates its prompt and status with blank rows, so it also reads the
+  block immediately above the last prompt. A live interrupt hint there
+  overrides an idle poll until the screen or the next poll catches up.
 
 **With no answer from either, a clock decides, and only there.** A thread whose
 pane is gone has no emulator, and six agents declare nothing. It keeps its

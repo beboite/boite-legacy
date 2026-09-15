@@ -60,6 +60,7 @@ pub fn dev_tools() -> Value {
                 "properties": {
                     "action": { "type": "string", "description": "start, stop, status or restart. Default status." },
                     "fresh": { "type": "boolean", "description": "Wipe the dev instance's SQLite before starting. Never touches the release install's." },
+                    "skipOnboarding": { "type": "boolean", "default": true, "description": "Pass --skip-onboarding to the app. Set false with fresh=true to test the first-run wizard." },
                     "env": {
                         "type": "object",
                         "description": "Variables merged onto the app's environment, such as BOITE_PILOT_CLAUDE_BIN.",

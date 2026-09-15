@@ -197,6 +197,7 @@ export function liveRows(lines: string[]): string[] {
  * the pattern list below, which every thread is judged against.
  */
 export function detectWorkingOnScreen(lines: string[], iconKey: IconKey): boolean {
+  if (iconKey === "codex" && codexStatusAbovePrompt(lines)) return true;
   const rows = liveRows(lines);
   if (rows.length === 0) return false;
   if (isKnownAgent(iconKey) && rows.some(isLiveStatusRow)) return true;
@@ -207,6 +208,18 @@ export function detectWorkingOnScreen(lines: string[], iconKey: IconKey): boolea
     if (pat.test(text)) return true;
   }
   return false;
+}
+
+function codexStatusAbovePrompt(lines: string[]): boolean {
+  // Codex separates its status, prompt and footer with blank rows. Only the
+  // block immediately above the last prompt belongs to the current turn.
+  const rows = lines.slice(-LIVE_ROWS);
+  const prompt = rows.findLastIndex((row) => /^\s*[›>]\s/.test(row));
+  if (prompt < 0) return false;
+  let end = prompt;
+  while (end > 0 && rows[end - 1].trim() === "") end--;
+  const status = liveRows(rows.slice(0, end)).join(" ");
+  return /\(\d/.test(status) && INTERRUPT_HINT.test(status);
 }
 
 /** Exported for the tests; the detector slices the window itself. */

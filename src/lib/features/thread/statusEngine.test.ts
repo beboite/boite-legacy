@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   written: [] as Array<{ id: string; status: string }>,
   notified: [] as string[],
   emulators: new Set<string>(),
+  rows: [] as string[],
   turn: null as { state: string } | null,
   // One fake group per test, holding the browser leaves the sweep reads.
   leaves: [] as Array<{ paneId: string; content: Record<string, unknown> }>,
@@ -98,7 +99,7 @@ vi.mock("$lib/backend/tauri/parked", () => ({ parkedLocal: new Map() }));
 // emulator holding its rows, and nothing can be read off it at all.
 vi.mock("$lib/shared/terminals", () => ({
   liveTerminal: (id: string) => (h.emulators.has(id) ? { id } : null),
-  terminalScreenRows: () => [],
+  terminalScreenRows: () => h.rows,
 }));
 
 vi.mock("$lib/storage/notify", () => ({
@@ -152,6 +153,7 @@ beforeEach(async () => {
   h.written = [];
   h.notified = [];
   h.emulators = new Set();
+  h.rows = [];
   h.turn = null;
   h.leaves = [];
   h.shown = new Set();
@@ -253,6 +255,21 @@ describe("a thread nothing can be read off", () => {
 });
 
 describe("notifications", () => {
+  it("keeps Codex working while its previous idle poll lags the visible turn", () => {
+    const t = thread({ iconKey: "codex", status: "running" });
+    h.threads = [t];
+    h.emulators.add(t.id);
+    h.turn = { state: "idle" };
+    h.rows = ["• Working (5m 04s · esc to interrupt)", "", "> Ask Codex to do anything", "", "Context 38% used"];
+    mod.statusEngine.start();
+    vi.advanceTimersByTime(TICK_MS * 4);
+    expect(t.status).toBe("running");
+    expect(h.notified).toEqual([]);
+    h.rows = ["> Ask Codex to do anything", "", "Context 38% used"];
+    vi.advanceTimersByTime(TICK_MS);
+    expect(t.status).toBe("ready");
+    expect(h.notified).toEqual(["awareness.detail.completed"]);
+  });
   it("stays quiet about a prompt that was already there on the first pass", () => {
     // `prevStatus` is empty after a mount, a workspace switch or a `forget`, so
     // the first pass has nothing to compare against. Treating that as a

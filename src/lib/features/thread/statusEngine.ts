@@ -436,6 +436,11 @@ function read(t: Thread, iconKey: IconKey): Reading | null {
           if (question !== null) {
             return { status: "waiting", active: true, waitingFor: question, declared };
           }
+          // The screen can show the next turn before the previous idle poll
+          // refreshes. Do not emit a completion or arm sleep from that old read.
+          if (iconKey === "codex" && rows && detectWorkingOnScreen(rows, iconKey)) {
+            return { status: "running", active: true };
+          }
           return { status: "ready", active, declared };
       }
     }

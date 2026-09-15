@@ -173,7 +173,11 @@ impl DevWindow {
     /// machine belongs to somebody who is working on it, and a window that
     /// takes the keyboard mid-sentence is the one failure this tool must not
     /// have.
-    pub fn start(&mut self, env: &BTreeMap<String, String>) -> Result<StartReport, String> {
+    pub fn start(
+        &mut self,
+        env: &BTreeMap<String, String>,
+        skip_onboarding: bool,
+    ) -> Result<StartReport, String> {
         if self.child_alive() {
             return Err("the dev window is already running; stop it or use restart".into());
         }
@@ -186,6 +190,10 @@ impl DevWindow {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if skip_onboarding {
+            // Bun consumes the first separator; Tauri needs two more to reach the app.
+            command.args(["--", "--", "--", "--skip-onboarding"]);
+        }
         command.env("BOITE_DEV_UNATTENDED", "1");
         for (key, value) in env {
             command.env(key, value);
