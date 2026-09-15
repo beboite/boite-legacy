@@ -18,6 +18,29 @@ async function settle(turns = 5) {
 }
 
 describe("writing to a boite that is not there", () => {
+  it("reads the native Codex name for an exact session over the remote codec", async () => {
+    const door = ticketDoor();
+    vi.stubGlobal("fetch", door.fetch);
+    const backend = new RemoteBackend("ws://boite.test/ws", "cred", () => {}, () => {}, { autoReconnect: false });
+    try {
+      const dial = backend.connect();
+      door.issue();
+      await settle();
+      const ws = FakeWebSocket.last!;
+      await completeHandshake(ws);
+      await dial;
+      const found = backend.session.find("codex", "/project", 0, [], null, "native-session");
+      await settle();
+      const request = ws.sent.filter((f): f is string => typeof f === "string")
+        .map((f) => JSON.parse(f)).find((r) => r.method === "session.find");
+      expect(request.params.sessionId).toBe("native-session");
+      ws.answer(ws.idOf("session.find")!, { session: { id: "native-session", modifiedMs: 0, title: null, name: "Fix Codex names" } });
+      await expect(found).resolves.toMatchObject({ id: "native-session", mtimeMs: 0, name: "Fix Codex names" });
+    } finally {
+      backend.dispose();
+    }
+  });
+
   /**
    * `sendInput` answers false for a socket that is not open and the frame is
    * dropped rather than queued, which is deliberate. Resolving anyway told

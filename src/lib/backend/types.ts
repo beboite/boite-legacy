@@ -909,9 +909,10 @@ export interface SessionHit {
    * and where it does, the attribution guess is not asked for an opinion.
    */
   ownPid?: boolean;
-  // First user prompt, for CLIs that never emit a descriptive OSC title
-  // (codex). Used to name the thread when it has no title yet.
+  /** First user prompt, used only as an initial fallback. */
   title?: string | null;
+  /** Native agent name, including generated titles and agent-side renames. */
+  name?: string | null;
 }
 
 /** A session claude has open, and what can be done about it. */
@@ -1059,6 +1060,7 @@ export interface SessionApi {
     afterUnixMs: number,
     excludeIds: string[],
     ptyId?: string | null,
+    sessionId?: string | null,
   ): Promise<SessionHit | null>;
   /**
    * Session ids claude currently has open, of any kind. `--resume` refuses

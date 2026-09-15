@@ -273,7 +273,7 @@ export const tauriSession: SessionApi = {
   migrate: (kind, sessionId, fromCwd, toCwd) =>
     invoke<boolean>("migrate_session", { kind, sessionId, fromCwd, toCwd }),
 
-  async find(kind, cwd, afterUnixMs, excludeIds, ptyId): Promise<SessionHit | null> {
+  async find(kind, cwd, afterUnixMs, excludeIds, ptyId, sessionId): Promise<SessionHit | null> {
     const command = SESSION_COMMANDS[kind];
     if (kind === "claude") {
       // Only claude keeps a registry of what it holds open, so only its
@@ -295,8 +295,9 @@ export const tauriSession: SessionApi = {
         id: string;
         modifiedMs: number;
         title: string | null;
-      } | null>(command, { cwd, afterUnixMs, excludeIds });
-      return hit ? { id: hit.id, mtimeMs: hit.modifiedMs, title: hit.title } : null;
+        name?: string | null;
+      } | null>(command, { cwd, afterUnixMs, excludeIds, sessionId: sessionId ?? null });
+      return hit ? { id: hit.id, mtimeMs: hit.modifiedMs, title: hit.title, name: hit.name } : null;
     }
     // The rest answer with an id and the activity timestamp their own store
     // keeps, which is null when that store had none to give, never a zero,
