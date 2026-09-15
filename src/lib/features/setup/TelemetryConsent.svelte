@@ -5,7 +5,7 @@
   import tradeOfferVideo from "./assets/trade-offer.webm";
   import noThanksVideo from "./assets/no-thanks.webm";
 
-  const DOC_URL = "https://github.com/beboite/boite/blob/master/docs/analytics.md";
+  const DOC_URL = "https://github.com/beboite/boite-legacy/blob/master/docs/analytics.md";
   const REJECT_TOTAL_MS = 2000;
 
   type Props = {
@@ -225,14 +225,14 @@
     color: color-mix(in srgb, var(--color-muted-foreground) 80%, transparent);
   }
   .deal-row-body {
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: var(--color-muted-foreground);
   }
 
   .opt-out-note {
     margin: 0;
-    font-size: var(--text-xs);
+    font-size: var(--text-sm);
     line-height: 1.5;
     color: color-mix(in srgb, var(--color-muted-foreground) 85%, transparent);
     text-align: center;

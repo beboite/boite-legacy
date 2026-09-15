@@ -13,11 +13,14 @@
   import { homeAvailable } from "$lib/features/settings/homeAvailable";
   import { platform } from "$lib/storage/platform.svelte";
   import {
+    launchChat,
     launchShortcut,
     launchShell,
     launchBlankTerminal,
     launchTargetProjectId,
   } from "$lib/features/thread/api";
+  import { chatChoice, pilotCatalog } from "$lib/features/pilot/catalog.svelte";
+  import MessageSquare from "@lucide/svelte/icons/message-square";
   import { launchTargetMenu } from "$lib/features/shortcut/launchMenu";
   import { t } from "$lib/i18n/index.svelte";
   import { longPress } from "$lib/shared/actions/longPress";
@@ -46,6 +49,11 @@
   const shells = $derived(platform.shellsFor(targetOrigin));
   const onBoite = $derived(platform.shellsOnBoite(targetOrigin));
 
+  // Which presets have a protocol, asked once and only when the switch is on.
+  $effect(() => {
+    if (open && settings.state.experimentPilot) void pilotCatalog.ensure();
+  });
+
   function goTerminal() {
     onClose();
     app.mobileTab = "terminal";
@@ -63,6 +71,14 @@
     if (!shortcut || !projectId) return;
     goTerminal();
     await launchShortcut(shortcut, projectId);
+  }
+
+  async function runChat(id: string, forceScratch = false) {
+    const shortcut = settings.state.shortcuts.find((s) => s.id === id);
+    const projectId = await launchTargetProjectId(forceScratch);
+    if (!shortcut || !projectId) return;
+    goTerminal();
+    await launchChat(shortcut, projectId);
   }
 
   async function runShell(shell: ShellOption, forceScratch = false) {
@@ -92,7 +108,7 @@
   {#if homeAvailable(settings.state)}
     <button
       type="button"
-      class="mb-3 flex w-full items-center gap-3 rounded-xl border border-border bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground/90 transition active:scale-[0.98] active:bg-[var(--color-surface-3)]"
+      class="mb-3 flex w-full items-center gap-3 rounded-xl border border-edge bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground transition active:scale-[0.98] active:bg-[var(--color-surface-3)]"
       onclick={goProjects}
     >
       <Boxes class="size-5 text-muted-foreground" />
@@ -103,19 +119,37 @@
     <div class="grid grid-cols-2 gap-2">
       {#each settings.state.shortcuts as shortcut (shortcut.id)}
         {@const iconKey = resolveIconKey(shortcut.iconKey, shortcut.label, shortcut.command)}
-        <button
-          type="button"
-          class="flex items-center gap-3 rounded-xl border border-border bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground/90 transition active:scale-[0.98] active:bg-[var(--color-surface-3)] disabled:opacity-40"
-          disabled={!shortcut.command.trim()}
-          onclick={() => runShortcut(shortcut.id)}
-          use:longPress={{
-            onLongPress: (x, y) =>
-              openMenu(x, y, (scratch) => void runShortcut(shortcut.id, scratch)),
-          }}
+        {@const choice = chatChoice(shortcut.command)}
+        <!-- The phone has no right-click and no modifier, so Chat is its own
+             tap target inside the card rather than a second gesture on it. -->
+        <div
+          class="flex items-stretch gap-1 rounded-xl border border-edge bg-[var(--color-surface-2)]"
         >
-          <ShortcutIcon {iconKey} size={20} color={shortcut.iconColor ?? null} />
-          <span class="min-w-0 flex-1 truncate font-medium">{shortcut.label}</span>
-        </button>
+          <button
+            type="button"
+            class="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-foreground transition active:scale-[0.98] active:bg-[var(--color-surface-3)] disabled:opacity-40"
+            disabled={!shortcut.command.trim()}
+            onclick={() => runShortcut(shortcut.id)}
+            use:longPress={{
+              onLongPress: (x, y) =>
+                openMenu(x, y, (scratch) => void runShortcut(shortcut.id, scratch)),
+            }}
+          >
+            <ShortcutIcon {iconKey} size={20} color={shortcut.iconColor ?? null} />
+            <span class="min-w-0 flex-1 truncate font-medium">{shortcut.label}</span>
+          </button>
+          {#if choice.offered}
+            <button
+              type="button"
+              class="flex shrink-0 items-center rounded-r-xl border-l border-edge px-3 text-muted-2 transition active:bg-[var(--color-surface-3)] disabled:opacity-40"
+              disabled={!choice.enabled || !shortcut.command.trim()}
+              onclick={() => runChat(shortcut.id)}
+              aria-label={t("pilot.chat")}
+            >
+              <MessageSquare class="size-4" />
+            </button>
+          {/if}
+        </div>
       {/each}
     </div>
   {/if}
@@ -127,7 +161,7 @@
     {#if onBoite}
       <!-- The list changed machine when the project did, and nothing else on
            screen says which one these shells belong to. -->
-      <span class="ml-auto normal-case tracking-normal text-muted-foreground/70">
+      <span class="ml-auto normal-case tracking-normal text-muted-2">
         {t("sidebar.onBoite", { name: workspace.info.name || "boite" })}
       </span>
     {/if}
@@ -135,7 +169,7 @@
   <div class="flex flex-col gap-1.5">
     <button
       type="button"
-      class="flex items-center gap-3 rounded-xl border border-border bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground/90 transition active:scale-[0.98] active:bg-[var(--color-surface-3)] disabled:opacity-40"
+      class="flex items-center gap-3 rounded-xl border border-edge bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground transition active:scale-[0.98] active:bg-[var(--color-surface-3)] disabled:opacity-40"
       onclick={() => runBlank()}
       use:longPress={{
         onLongPress: (x, y) => openMenu(x, y, (scratch) => void runBlank(scratch)),
@@ -147,7 +181,7 @@
     {#each shells as shell (shell.id)}
       <button
         type="button"
-        class="flex items-center justify-between gap-3 rounded-xl border border-border bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground/90 transition active:scale-[0.98] active:bg-[var(--color-surface-3)] disabled:opacity-40"
+        class="flex items-center justify-between gap-3 rounded-xl border border-edge bg-[var(--color-surface-2)] px-3 py-3 text-left text-sm text-foreground transition active:scale-[0.98] active:bg-[var(--color-surface-3)] disabled:opacity-40"
         onclick={() => runShell(shell)}
         use:longPress={{
           onLongPress: (x, y) =>
@@ -155,7 +189,7 @@
         }}
       >
         <span class="min-w-0 flex-1 truncate font-medium">{shell.label}</span>
-        <span class="shrink-0 text-xs text-muted-foreground/70">{shell.id}</span>
+        <span class="shrink-0 text-xs text-muted-2">{shell.id}</span>
       </button>
     {/each}
   </div>

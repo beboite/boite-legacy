@@ -10,15 +10,18 @@
 //! fresh, and goes quiet after [`CODEX_ROLLOUT_TTL`].
 
 use super::*;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use parking_lot::Mutex;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionHit {
     pub id: String,
     pub modified_ms: i64,
-    /// First real user prompt, used as the thread title: codex never emits a
-    /// conversation summary in its OSC title (only spinner/project/model/...).
+    /// First real user prompt, used only until Codex supplies a native name.
     pub title: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -43,12 +46,56 @@ const CODEX_PROMPT_SKIP_PREFIXES: &[&str] = &[
     "<user_instructions",
     "<turn_context",
     "<INSTRUCTIONS",
+    "<recommended_plugins",
 ];
 
 const CODEX_TITLE_MAX_CHARS: usize = 60;
 
+fn read_codex_name(conn: &rusqlite::Connection, id: &str) -> Option<String> {
+    // Older schemas have no name column. Their title is the first prompt,
+    // so it must never be mistaken for a generated or manually assigned name.
+    conn.query_row("SELECT name FROM threads WHERE id = ?1", [id], |row| {
+        row.get::<_, Option<String>>(0)
+    }).ok().flatten().map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+fn read_known_codex_session(conn: &rusqlite::Connection, id: &str, cwd: &str) -> Option<CodexSessionHit> {
+    let (recorded_cwd, rollout): (String, String) = conn.query_row(
+        "SELECT cwd, rollout_path FROM threads WHERE id = ?1", [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).ok()?;
+    if normalize(recorded_cwd.strip_prefix(r"\\?\").unwrap_or(&recorded_cwd))
+        != normalize(cwd.strip_prefix(r"\\?\").unwrap_or(cwd)) { return None; }
+    let modified_ms = fs::metadata(&rollout).ok().and_then(|m| m.modified().ok())
+        .map(ms_since_epoch).unwrap_or(0);
+    Some(CodexSessionHit {
+        id: id.to_string(), modified_ms, title: None, name: read_codex_name(conn, id),
+    })
+}
+
 fn codex_title_from_prompt(text: &str) -> Option<String> {
-    let trimmed = text.trim();
+    let mut trimmed = text.trim();
+    // Clipboard images arrive as text wrappers around a separate image item,
+    // or as one combined block. Neither the wrapper nor its label is a request.
+    loop {
+        if trimmed.starts_with("<image ") || trimmed.starts_with("<image>") {
+            let end = trimmed
+                .find("</image>")
+                .map(|at| at + "</image>".len())
+                .or_else(|| trimmed.find('>').map(|at| at + 1))?;
+            trimmed = trimmed[end..].trim_start();
+        } else if let Some(rest) = trimmed.strip_prefix("</image>") {
+            trimmed = rest.trim_start();
+        } else if let Some(rest) = trimmed.strip_prefix("[Image #") {
+            let end = rest.find(']')?;
+            if end == 0 || !rest[..end].chars().all(|c| c.is_ascii_digit()) {
+                break;
+            }
+            trimmed = rest[end + 1..].trim_start();
+        } else {
+            break;
+        }
+    }
     if trimmed.is_empty() {
         return None;
     }
@@ -126,7 +173,14 @@ pub fn find_codex_session_blocking(
     cwd: String,
     after_unix_ms: i64,
     exclude: &HashSet<String>,
+    session_id: Option<&str>,
 ) -> Option<CodexSessionHit> {
+    let conn = codex_state_db().and_then(|path| open_readonly(&path).ok());
+    // An already bound thread asks by identity, even while idle. A newer
+    // sibling transcript must not hide its name or get attributed to it.
+    if let Some(id) = session_id {
+        return read_known_codex_session(conn.as_ref()?, id, &cwd);
+    }
     let home = dirs::home_dir()?;
     let sessions_dir = home.join(".codex").join("sessions");
     if !sessions_dir.is_dir() {
@@ -145,10 +199,12 @@ pub fn find_codex_session_blocking(
         if let Some((id, scwd)) = read_codex_session_meta(&path) {
             if normalize(&scwd) == target && !exclude.contains(&id) {
                 let title = read_codex_first_prompt(&path);
+                let name = conn.as_ref().and_then(|conn| read_codex_name(conn, &id));
                 return Some(CodexSessionHit {
                     id,
                     modified_ms,
                     title,
+                    name,
                 });
             }
         }
@@ -156,13 +212,16 @@ pub fn find_codex_session_blocking(
     None
 }
 
-/// How much of a rollout's tail is scanned for the marker that ends a turn.
-///
-/// Generous, because the markers bracket a whole turn and everything the agent
-/// did lands in between. Not unbounded, because this runs on a timer: past this
-/// the answer is `Unknown` and the terminal's own rows decide, which for codex
-/// they can, since it prints an interrupt hint the whole time it works.
-const CODEX_TAIL_BYTES: u64 = 256 * 1024;
+#[derive(Default)]
+struct RolloutCursor {
+    offset: u64,
+    len: u64,
+    modified: Option<SystemTime>,
+    state: Option<&'static str>,
+}
+
+static ROLLOUT_CURSORS: LazyLock<Mutex<HashMap<PathBuf, RolloutCursor>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// How long a rollout can go untouched before an open turn stops counting.
 ///
@@ -208,7 +267,7 @@ fn codex_state_db() -> Option<PathBuf> {
 /// pushed over JSON-RPC to whoever spawned the process. A terminal someone else
 /// started exposes none of it, so the transcript is what is left: it brackets each
 /// turn with `task_started` and closes it with `task_complete` or `turn_aborted`.
-/// Reading the last of those backwards is the whole answer.
+/// The newest of those markers decides, regardless of how much output follows.
 ///
 /// `waiting` has no equivalent here. Codex knows the difference (its protocol has
 /// `waitingOnApproval` and `waitingOnUserInput`) but does not write approval
@@ -219,42 +278,50 @@ fn codex_state_db() -> Option<PathBuf> {
 /// Bounded by how long ago the file was written: an open turn is only an open
 /// turn while codex is still there to close it.
 fn codex_rollout_state(path: &Path) -> Option<&'static str> {
-    let mut file = fs::File::open(path).ok()?;
+    let mut cursors = ROLLOUT_CURSORS.lock();
+    // Match the thread-index query's ceiling, including sessions no longer open.
+    if cursors.len() >= 200 && !cursors.contains_key(path) {
+        cursors.clear();
+    }
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => { cursors.remove(path); return None; },
+    };
     let meta = file.metadata().ok()?;
     let len = meta.len();
-    let age = meta
-        .modified()
-        .ok()
-        .and_then(|m| SystemTime::now().duration_since(m).ok());
-    let from = len.saturating_sub(CODEX_TAIL_BYTES);
-    file.seek(SeekFrom::Start(from)).ok()?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf).ok()?;
-    // Dropping the first line matters only when the window clipped one in half;
-    // a partial line cannot parse anyway, so this is about not scanning garbage.
-    let body = if from > 0 {
-        buf.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
-    } else {
-        &buf
-    };
-    for line in body.lines().rev() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(event) = serde_json::from_str::<CodexRolloutLine>(line) else {
-            continue;
-        };
-        if event.kind.as_deref() != Some("event_msg") {
-            continue;
-        }
-        match event.payload.and_then(|p| p.kind).as_deref() {
-            Some("task_started") => return bound_open_turn(age),
-            Some("task_complete") | Some("turn_aborted") => return Some("idle"),
-            _ => continue,
-        }
+    let modified = meta.modified().ok();
+    let age = modified.and_then(|m| SystemTime::now().duration_since(m).ok());
+    let cursor = cursors.entry(path.to_path_buf()).or_default();
+    if len < cursor.len || (len == cursor.len && modified != cursor.modified) {
+        *cursor = RolloutCursor::default();
     }
-    None
+    // Read history once, then only appended records. A fixed tail loses the
+    // opening marker as soon as a tool prints more than the tail can hold.
+    file.seek(SeekFrom::Start(cursor.offset)).ok()?;
+    let mut reader = BufReader::new(file.take(len - cursor.offset));
+    let mut line = Vec::new();
+    while reader.read_until(b'\n', &mut line).ok()? > 0 {
+        if let Ok(event) = serde_json::from_slice::<CodexRolloutLine>(&line) {
+            if event.kind.as_deref() == Some("event_msg") {
+                match event.payload.and_then(|p| p.kind).as_deref() {
+                    Some("task_started") => cursor.state = Some("busy"),
+                    Some("task_complete") | Some("turn_aborted") => cursor.state = Some("idle"),
+                    _ => {},
+                }
+            }
+        }
+        // The writer can stop anywhere, even inside UTF-8. Retry the final
+        // record on the next poll instead of consuming an incomplete JSON line.
+        if !line.ends_with(b"\n") { break; }
+        cursor.offset += line.len() as u64;
+        line.clear();
+    }
+    cursor.len = len;
+    cursor.modified = modified;
+    match cursor.state {
+        Some("busy") => bound_open_turn(age),
+        state => state,
+    }
 }
 
 /// Whether a turn left open in a rollout still counts, given the file's age.
@@ -356,6 +423,118 @@ pub(super) fn codex_turns(queries: &[TurnQuery]) -> Vec<AgentTurn> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_name_arriving_later_is_read_without_using_the_prompt_title() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT, name TEXT, title TEXT);
+            INSERT INTO threads VALUES ('own', NULL, 'please fix this');
+            INSERT INTO threads VALUES ('other', 'Other task', 'other prompt');").unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), None);
+        conn.execute("UPDATE threads SET name = 'Fix Codex threads' WHERE id = 'own'", []).unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), Some("Fix Codex threads".into()));
+        conn.execute("UPDATE threads SET name = 'Updated task' WHERE id = 'own'", []).unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), Some("Updated task".into()));
+        assert_eq!(read_codex_name(&conn, "missing"), None);
+    }
+
+    #[test]
+    fn old_codex_databases_without_names_remain_readable() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE threads (id TEXT, title TEXT);
+            INSERT INTO threads VALUES ('own', 'first prompt');").unwrap();
+        assert_eq!(read_codex_name(&conn, "own"), None);
+    }
+
+    #[test]
+    fn known_codex_name_is_read_while_idle_without_selecting_a_sibling() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(r"CREATE TABLE threads (id TEXT, name TEXT, cwd TEXT, rollout_path TEXT);
+            INSERT INTO threads VALUES ('own', 'Original name', '\\?\D:\project', 'missing-rollout.jsonl');
+            INSERT INTO threads VALUES ('newer', 'Sibling name', 'D:\project', 'missing-rollout.jsonl');").unwrap();
+        let hit = read_known_codex_session(&conn, "own", "d:/project").unwrap();
+        assert_eq!(hit.id, "own");
+        assert_eq!(hit.modified_ms, 0);
+        assert_eq!(hit.name.as_deref(), Some("Original name"));
+        conn.execute("UPDATE threads SET name = 'Renamed task' WHERE id = 'own'", []).unwrap();
+        assert_eq!(read_known_codex_session(&conn, "own", "d:/project").unwrap().name.as_deref(), Some("Renamed task"));
+        assert!(read_known_codex_session(&conn, "missing", "d:/project").is_none());
+        assert!(read_known_codex_session(&conn, "own", "d:/other").is_none());
+    }
+
+    #[test]
+    fn image_attachments_do_not_become_prompt_titles() {
+        assert_eq!(codex_title_from_prompt(r#"<image name="[Image #1]" path="C:\Temp\shot.png">"#), None);
+        assert_eq!(codex_title_from_prompt("</image>"), None);
+        assert_eq!(codex_title_from_prompt("[Image #1] Fix the thread names"), Some("Fix the thread names".into()));
+        assert_eq!(codex_title_from_prompt("<image name=\"[Image #1]\">ignored</image> [Image #1] Fix the thread names"), Some("Fix the thread names".into()));
+        assert_eq!(codex_title_from_prompt("<recommended_plugins>injected setup</recommended_plugins>"), None);
+    }
+
+    #[test]
+    fn prompt_title_reads_past_separate_image_content_parts() {
+        let path = std::env::temp_dir().join(format!("boite-codex-image-title-{}.jsonl", std::process::id()));
+        let event = serde_json::json!({"type":"response_item","payload":{
+            "type":"message","role":"user","content":[
+                {"type":"input_text","text":"<image name=\"[Image #1]\" path=\"shot.png\">"},
+                {"type":"input_image","image_url":"data:image/png;base64,fixture"},
+                {"type":"input_text","text":"</image>"},
+                {"type":"input_text","text":"[Image #1] Fix the thread names"}
+            ]}});
+        fs::write(&path, event.to_string()).unwrap();
+        assert_eq!(read_codex_first_prompt(&path), Some("Fix the thread names".into()));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_long_codex_turn_keeps_its_start_marker() {
+        let path = std::env::temp_dir().join(format!("boite-codex-long-{}.jsonl", std::process::id()));
+        let mut log = String::from("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n");
+        log.push_str(&format!("{{\"type\":\"response_item\",\"payload\":\"{}\"}}\n", "x".repeat(300_000)));
+        fs::write(&path, &log).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+
+        log.push_str("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\"}}\n");
+        fs::write(&path, &log).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("idle"));
+        log.push_str("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n");
+        fs::write(&path, &log).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn codex_cursor_retries_partial_utf8_and_resets_after_truncation() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("boite-codex-partial-{}.jsonl", std::process::id()));
+        let started = b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n";
+        fs::write(&path, started).unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        assert_eq!(ROLLOUT_CURSORS.lock()[&path].offset, started.len() as u64);
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"type\":\"response_item\",\"text\":\"\xc3").unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        assert_eq!(ROLLOUT_CURSORS.lock()[&path].offset, started.len() as u64);
+        file.write_all(b"\xa9\"}\ninvalid json\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"turn_aborted\"}}\n").unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("idle"));
+        drop(file);
+        fs::write(&path, b"{\"type\":\"session_meta\"}\n").unwrap();
+        assert_eq!(codex_rollout_state(&path), None);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn cached_codex_activity_still_expires() {
+        let path = std::env::temp_dir().join(format!("boite-codex-cache-ttl-{}.jsonl", std::process::id()));
+        fs::write(&path, b"{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"}}\n").unwrap();
+        assert_eq!(codex_rollout_state(&path), Some("busy"));
+        let old = SystemTime::now() - CODEX_ROLLOUT_TTL - Duration::from_secs(1);
+        fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
+        assert_eq!(codex_rollout_state(&path), None);
+        assert_eq!(codex_rollout_state(&path), None);
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn codex_rollout_markers_decide_the_turn() {

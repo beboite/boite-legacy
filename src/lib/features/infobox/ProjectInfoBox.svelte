@@ -465,25 +465,25 @@
               {gs?.branch ?? t("git.detached")}
             </span>
             {#if (gs?.ahead ?? 0) > 0}
-              <span class="flex shrink-0 items-center text-2xs text-muted-foreground">
+              <span class="flex shrink-0 items-center text-xs text-muted-foreground">
                 <ArrowUp class="size-3" />{gs?.ahead}
               </span>
             {/if}
             {#if (gs?.behind ?? 0) > 0}
-              <span class="flex shrink-0 items-center text-2xs text-muted-foreground">
+              <span class="flex shrink-0 items-center text-xs text-muted-foreground">
                 <ArrowDown class="size-3" />{gs?.behind}
               </span>
             {/if}
 
             {#if conflictsCount > 0}
               <span
-                class="flex shrink-0 items-center gap-0.5 rounded bg-[var(--color-danger)]/15 px-1 text-2xs font-semibold text-[var(--color-danger)]"
+                class="flex shrink-0 items-center gap-0.5 rounded bg-[var(--color-danger)]/15 px-1 text-xs font-semibold text-[var(--color-danger)]"
                 use:tip={t("infoBox.conflicts", { count: conflictsCount })}
               >
                 <AlertTriangle class="size-2.5" />{conflictsCount}
               </span>
             {:else if stagedCount > 0 || unstagedCount > 0}
-              <span class="flex shrink-0 items-center gap-1 font-mono text-2xs">
+              <span class="flex shrink-0 items-center gap-1 font-mono text-xs">
                 {#if stagedCount > 0}
                   <span class="font-medium text-[var(--color-success)]">+{stagedCount}</span>
                 {/if}
@@ -495,10 +495,10 @@
 
             {#if isWorktree}
               <span
-                class="ml-auto flex shrink-0 items-center gap-1 rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-2xs text-muted-foreground"
+                class="ml-auto flex shrink-0 items-center gap-1 rounded bg-[var(--color-surface-3)] px-1.5 py-0.5 text-xs text-muted-foreground"
                 use:tip={threadHere?.worktreePath ?? ""}
               >
-                <FolderGit2 class="size-3 text-muted-foreground/80" />
+                <FolderGit2 class="size-3 text-muted-2" />
                 <span class="max-w-[4.5rem] truncate">
                   {worktreeName || t("infoBox.worktreeTag")}
                 </span>
@@ -514,11 +514,11 @@
             <span class="relative flex size-3.5 shrink-0 items-center justify-center">
               <ShortcutIcon iconKey={agentIconKey} size={14} color={agentColor} />
             </span>
-            <span class="max-w-[9rem] truncate font-medium text-foreground/90">{agentName}</span>
+            <span class="max-w-[9rem] truncate font-medium text-foreground">{agentName}</span>
 
             {#if threadStatus === "running"}
               <span
-                class="ml-auto flex shrink-0 items-center gap-1 text-2xs text-[var(--color-success)]"
+                class="ml-auto flex shrink-0 items-center gap-1 text-xs text-[var(--color-success)]"
               >
                 <Loader2 class="size-3 animate-spin" />
                 <span>
@@ -529,7 +529,7 @@
               </span>
             {:else if threadStatus === "waiting"}
               <span
-                class="ml-auto flex shrink-0 items-center gap-1 text-2xs font-medium text-[var(--color-warning)]"
+                class="ml-auto flex shrink-0 items-center gap-1 text-xs font-medium text-[var(--color-warning)]"
               >
                 <Clock class="size-3 animate-pulse" />
                 <span>
@@ -539,23 +539,23 @@
                 </span>
               </span>
             {:else if threadStatus === "ready"}
-              <span class="ml-auto flex shrink-0 items-center gap-1 text-2xs text-muted-foreground">
+              <span class="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
                 <span class="size-1.5 rounded-full bg-[var(--color-success)]"></span>
                 <span>{t("status.ready")}</span>
               </span>
             {:else if threadStatus === "idle"}
-              <span class="ml-auto flex shrink-0 items-center gap-1 text-2xs text-muted-foreground">
+              <span class="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
                 <span class="size-1.5 rounded-full bg-muted-foreground/40"></span>
                 <span>{t("status.idle")}</span>
               </span>
             {:else if threadStatus === "stopped"}
-              <span class="ml-auto flex shrink-0 items-center gap-1 text-2xs text-muted-foreground">
+              <span class="ml-auto flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
                 <span class="font-mono">z</span>
                 <span>{t("status.asleep")}</span>
               </span>
             {:else if threadStatus === "error" || threadStatus === "exited"}
               <span
-                class="ml-auto flex shrink-0 items-center gap-1 text-2xs text-[var(--color-danger)]"
+                class="ml-auto flex shrink-0 items-center gap-1 text-xs text-[var(--color-danger)]"
               >
                 <span>{t("status.error")}</span>
               </span>
@@ -574,7 +574,7 @@
             <span class="relative flex size-3.5 shrink-0 items-center justify-center">
               <ShortcutIcon iconKey={claimed[0].claimedBy as IconKey} size={14} />
             </span>
-            <span class="min-w-0 flex-1 truncate text-foreground/90">{claimed[0].title}</span>
+            <span class="min-w-0 flex-1 truncate text-foreground">{claimed[0].title}</span>
             <!-- What this row is. An agent's title can be anything, a test name
                  included, and the agent's own icon beside it says who without
                  ever saying what: the line read as a stray message sitting above
@@ -587,7 +587,7 @@
         {:else if !collapsed && openTodos.length > 0}
           <div class="row">
             <ListTodo class="size-3.5 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate text-foreground/80">{openTodos[0].title}</span>
+            <span class="min-w-0 flex-1 truncate text-foreground">{openTodos[0].title}</span>
             <span class="tag">{t("infoBox.openTag")}</span>
             {#if openTodos.length > 1}
               <span class="tag">{t("infoBox.moreClaimed", { count: openTodos.length - 1 })}</span>
@@ -598,13 +598,13 @@
         {#if !collapsed && commits.length > 0}
           <div class="row">
             <GitCommitHorizontal class="size-3.5 shrink-0 text-muted-foreground" />
-            <span class="shrink-0 font-mono text-2xs text-muted-foreground">
+            <span class="shrink-0 font-mono text-xs text-muted-foreground">
               {commits[0].shortSha}
             </span>
-            <span class="min-w-0 flex-1 truncate text-foreground/90">
+            <span class="min-w-0 flex-1 truncate text-foreground">
               {commits[0].summary}
             </span>
-            <span class="shrink-0 text-2xs text-muted-foreground/70">
+            <span class="shrink-0 text-xs text-muted-2">
               {ago(commits[0].time)}
             </span>
           </div>
@@ -630,7 +630,7 @@
                       <span class="flex size-3.5 shrink-0 items-center justify-center">
                         <ShortcutIcon iconKey={item.claimedBy as IconKey} size={14} />
                       </span>
-                      <span class="truncate text-foreground/80">{item.title}</span>
+                      <span class="truncate text-foreground">{item.title}</span>
                     </div>
                   {/each}
                 </div>
@@ -643,8 +643,8 @@
                   <div class="border-t border-border/60 py-0.5">
                     {#each nextOpen as item (item.id)}
                       <div class="row dim text-muted-foreground">
-                        <Circle class="size-3 shrink-0 text-muted-foreground/60" />
-                        <span class="truncate text-foreground/80">{item.title}</span>
+                        <Circle class="size-3 shrink-0 text-muted-2" />
+                        <span class="truncate text-foreground">{item.title}</span>
                       </div>
                     {/each}
                   </div>
@@ -653,7 +653,7 @@
 
               {#if allTodos.length > 0}
                 <div class="row dim border-t border-border/40">
-                  <span class="flex items-center gap-2 text-2xs text-muted-foreground/70">
+                  <span class="flex items-center gap-2 text-xs text-muted-2">
                     <span>{claimed.length} {t("infoBox.claimedSummary")}</span>
                     <span>·</span>
                     <span>{openTodos.length} {t("infoBox.openSummary")}</span>
@@ -670,13 +670,13 @@
                   {#each commits.slice(1) as commit (commit.sha)}
                     <div class="row dim">
                       <span class="w-3.5 shrink-0"></span>
-                      <span class="shrink-0 font-mono text-2xs text-muted-foreground">
+                      <span class="shrink-0 font-mono text-xs text-muted-foreground">
                         {commit.shortSha}
                       </span>
-                      <span class="min-w-0 flex-1 truncate text-foreground/80">
+                      <span class="min-w-0 flex-1 truncate text-foreground">
                         {commit.summary}
                       </span>
-                      <span class="shrink-0 text-2xs text-muted-foreground/70">
+                      <span class="shrink-0 text-xs text-muted-2">
                         {ago(commit.time)}
                       </span>
                     </div>
@@ -688,12 +688,12 @@
                 <div
                   class="row dim justify-between border-t border-border/60 bg-[var(--color-surface-2)]"
                 >
-                  <span class="flex items-center gap-1 text-2xs text-muted-foreground">
+                  <span class="flex items-center gap-1 text-xs text-muted-foreground">
                     <Zap class="size-3 text-muted-foreground" />
                     <span>{t("infoBox.tokensUsed", { tokens: formatTokens(totalTokens) })}</span>
                   </span>
                   {#if (report?.sessions ?? 0) > 0}
-                    <span class="text-2xs text-muted-foreground">
+                    <span class="text-xs text-muted-foreground">
                       {report?.sessions} {t("stats.sessions")}
                     </span>
                   {/if}
@@ -759,6 +759,15 @@
       left var(--dur-3) ease,
       top var(--dur-3) ease,
       box-shadow var(--dur-2) ease;
+  }
+
+  /* The box is grabbed and dragged, so a pointer landing on it must not draw a
+     focus box around the thing being moved. The keyboard reaching it is the
+     other case entirely: it floats over a terminal, and without this there is
+     nothing on screen saying the keys now go to the card. */
+  .card:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-foreground) 45%, transparent);
+    outline-offset: 2px;
   }
 
   .card.dragging {
@@ -861,7 +870,7 @@
     border-radius: var(--radius-xs);
     background: var(--color-surface-3);
     padding: 0 0.25rem;
-    font-size: var(--text-2xs);
+    font-size: var(--text-xs);
     color: var(--color-muted-foreground);
   }
 </style>

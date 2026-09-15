@@ -14,6 +14,7 @@ import { notifyWhenUnfocused } from "$lib/storage/notify";
 import { t as translate } from "$lib/i18n/index.svelte";
 import { detectIconKey } from "$lib/shared/icons/detect";
 import { ptyKill } from "$lib/storage/pty";
+import { forgetPilotSession } from "$lib/features/pilot/session";
 import { logger } from "$lib/shared/services/logger.svelte";
 import { agentTurns } from "./agent-turns";
 import { noticeDeclaredCwd } from "./agent-cwd";
@@ -98,22 +99,6 @@ const idleSince = new Map<string, number>();
 // neither durable state nor something worth a database write.
 const waitingReason = new Map<string, string>();
 let timer: ReturnType<typeof setInterval> | null = null;
-
-/**
- * The most recent sign of life on a thread, across all three stamps, or 0.
- *
- * One number rather than the same three-way `Math.max` written out at each call
- * site: auto-sleep and the unread backstop ask exactly this question and must
- * not drift apart on which stamps count. Why each one is enough on its own is on
- * the declarations above.
- */
-function lastActivityAt(threadId: string): number {
-  return Math.max(
-    lastWorkingAt.get(threadId) ?? 0,
-    lastOutputAt.get(threadId) ?? 0,
-    lastTranscriptAt.get(threadId) ?? 0,
-  );
-}
 
 function onVisibility() {
   if (!document.hidden) agentTurns.wake();
@@ -219,9 +204,14 @@ function maybeAutoClose(threadId: string, iconKey: string | null | undefined) {
   const enabled = settings.state.idleAutocloseByIcon[iconKey] === true;
   if (!enabled) return;
   const t = app.threadById(threadId);
-  if (!t || !t.ptyId) return;
+  if (!t) return;
+  // A chat thread has no PTY and never will: what auto-sleep stops there is the
+  // native session, and the row's own id is what names it. Every check below is
+  // the same one, which is the point of it being one function.
+  const pilot = t.runtime === "pilot";
+  if (!pilot && !t.ptyId) return;
   if (t.keepAwake) return;
-  if (!t.sessionId) {
+  if (!pilot && !t.sessionId) {
     logger.debug("idle", `skip auto-sleep for ${t.label}: no session captured yet`, {
       iconKey,
     });
@@ -233,7 +223,11 @@ function maybeAutoClose(threadId: string, iconKey: string | null | undefined) {
   // keeps a long quiet tool call or an output-streaming subagent from getting
   // its PTY killed mid-work while the dot reads "ready".
   const timeoutMs = minutes * 60_000;
-  const lastActivity = lastActivityAt(threadId);
+  const lastActivity = Math.max(
+    lastWorkingAt.get(threadId) ?? 0,
+    lastOutputAt.get(threadId) ?? 0,
+    lastTranscriptAt.get(threadId) ?? 0,
+  );
   if (lastActivity > 0 && now - lastActivity < timeoutMs) {
     idleSince.delete(threadId);
     return;
@@ -254,7 +248,27 @@ function maybeAutoClose(threadId: string, iconKey: string | null | undefined) {
   }
   const idleMs = now - armed;
   if (idleMs < timeoutMs) return;
+  if (pilot) {
+    app.setThreadStatus(t.id, "stopped", null);
+    app.setThreadAutoSlept(t.id, true);
+    // The window no longer holds this row's session, so the next pane to open
+    // on it resumes rather than assuming somebody else already did.
+    forgetPilotSession(t.id);
+    // Polite, and that is what makes this sleep rather than a close: the native
+    // session stays resumable, so opening the pane again picks the conversation
+    // up where it was. Asked of the machine the thread runs on, which in dynamic
+    // mode is not this one.
+    void workspace
+      .backendFor(t.origin)
+      .pilot.stop(t.id)
+      .catch((err: unknown) => {
+        logger.warn("idle", `failed to stop ${t.label} during auto-sleep`, String(err));
+      });
+    logger.info("idle", `auto-slept ${t.label} after ${minutes}m idle`, { iconKey, idleMs });
+    return;
+  }
   const pid = t.ptyId;
+  if (!pid) return;
   app.setThreadPtyId(t.id, null);
   // In memory only, and deliberately: the row already carries the mark of this
   // run, and a sleep written down would have the next boot read it as the run
@@ -464,7 +478,7 @@ export function settleUnread(
  * transition is written once, not once per window.
  */
 function recordPhase(backend: Backend, t: Thread, next: ThreadStatus): void {
-  if (!settings.state.experimentOrchestrator) return;
+  if (!settings.state.experimentWorkspace) return;
   backend.conduct
     ?.record({
       kind: "thread.phase",
@@ -474,103 +488,6 @@ function recordPhase(backend: Backend, t: Thread, next: ThreadStatus): void {
       source: "phase",
     })
     .catch(() => {});
-}
-
-/**
- * What a thread whose PTY is gone becomes on the row.
- *
- * Parked is not gone. A local PTY detached by a workspace switch is still alive
- * and its pane will reattach, so its status and dot colour are kept exactly as
- * they are; demoting it would flatten a ping the user is meant to still see.
- * Anything else has nothing left to read at all, so its bookkeeping goes and a
- * live status goes back to `idle`, which is what a row with no process behind it
- * says. The three finished statuses are left alone: they are not this loop's.
- */
-function settleDetachedThread(t: Thread) {
-  if (parkedLocal.has(t.id)) return;
-  forgetThread(t.id);
-  if (t.status === "ready" || t.status === "running" || t.status === "waiting") {
-    app.setThreadStatus(t.id, "idle");
-  }
-}
-
-/**
- * What to ask the turn poll about this thread, or null when there is nothing to
- * ask.
- *
- * Only an agent keeps a store worth reading, so a plain shell and a row whose
- * command matched no agent are left out rather than sent as a query nothing can
- * answer. The cwd goes along so a thread that has not captured its session id
- * yet can still be placed: those first seconds are part of the opening turn,
- * which is the one most likely to spend ten silent minutes in a subagent.
- */
-function turnQueryFor(t: Thread, iconKey: IconKey): AgentTurnQuery | null {
-  if (!iconKey || iconKey === "terminal") return null;
-  return {
-    kind: iconKey,
-    sessionId: t.sessionId ?? null,
-    cwd: threadCwd(t, app.projectById(t.projectId)) ?? "",
-  };
-}
-
-/**
- * Writes down everything one positive reading decided.
- *
- * Five separate consequences, and the order between the first and the fourth is
- * load-bearing: the checkpoint edges are taken before the status is applied, so
- * a turn short enough to open and close between two ticks still gets both of its
- * ends. The dot may never have moved, and the checkpoints are what the diff is
- * made of.
- */
-function applyReading(t: Thread, backend: Backend, reading: Reading, now: number) {
-  noteDeclaredTurn(t, backend, reading.declared);
-  // Stamped from `active`, not from the dot: a thread waiting on a prompt, or
-  // one whose agent finished while its shell runs on, is doing something even
-  // though it is not the agent thinking. This stamp is what auto-sleep reads.
-  if (reading.active) lastWorkingAt.set(t.id, now);
-  const reason = reading.waitingFor?.trim();
-  if (reading.status === "waiting" && reason) waitingReason.set(t.id, reason);
-  else waitingReason.delete(t.id);
-  const next = reading.status;
-  if (t.status !== next) {
-    app.setThreadStatus(t.id, next);
-    recordPhase(backend, t, next);
-  }
-  // The same call the control-event path makes for a thread this sweep is not
-  // allowed to judge, so the two say the same things on the same terms.
-  announceStatus(t, next);
-}
-
-/**
- * What a thread nothing could be read off becomes.
- *
- * No emulator holds its rows and its agent declares nothing. Left as it was, a
- * `running` thread here would never be revisited by anything, so it stays lit
- * and, being lit, stays out of auto-sleep's reach with its PTY held for the life
- * of the window. Demoted on the stamps alone, the way the server does it with no
- * emulator either. No notification: this is the absence of evidence, not a turn
- * that ended.
- */
-function settleUnreadThread(t: Thread, now: number) {
-  const settled = settleUnread(t.status, lastActivityAt(t.id), now);
-  if (!settled) return;
-  app.setThreadStatus(t.id, settled);
-  prevStatus.set(t.id, settled);
-}
-
-/**
- * Whether this thread is counting down towards auto-sleep, or is not a candidate
- * at all.
- *
- * Only a settled `ready` nobody is looking at counts. `waiting` is excluded by
- * being its own status, and a `ready` thread whose shell is still running is
- * excluded further down by the activity stamp `maybeAutoClose` checks. Anything
- * else drops the countdown anchor rather than letting a stale one decide a later
- * pass.
- */
-function updateAutoSleep(t: Thread, visible: Set<string>) {
-  if (t.status === "ready" && !visible.has(t.id)) maybeAutoClose(t.id, t.iconKey);
-  else idleSince.delete(t.id);
 }
 
 function tick() {
@@ -593,13 +510,37 @@ function tick() {
     // branch further down can leave the pass early, this one cannot.
     if (t.status === "running" || t.status === "waiting") drivenPaneSince.delete(t.id);
     else maybeCloseDrivenPanes(t.id, now);
+    // A pilot row has one source and it is `status.changed`: no pid registry,
+    // no screen rows, no clock (`docs/pilot.md`). Left in the sweep below it
+    // would be demoted to `idle` by the `!t.ptyId` arm on every single pass,
+    // since a chat thread has no PTY by construction, and the exact status the
+    // protocol just reported would last a hundred milliseconds. The host writes
+    // it instead, off the event the driver sent.
+    //
+    // Auto-sleep is the one thing it does keep, and for the same reason a
+    // terminal has it: a worker nobody is reading is a child process nobody is
+    // reading. It is the user's per-agent setting, so it applies to whichever
+    // runtime that agent was started on.
+    if (t.runtime === "pilot") {
+      if (t.status === "running" || t.status === "waiting") lastWorkingAt.set(t.id, now);
+      if (t.status === "ready" && !visible.has(t.id)) maybeAutoClose(t.id, t.iconKey);
+      else idleSince.delete(t.id);
+      continue;
+    }
     // Server-owned threads (remote origin in dynamic mode) get their status
     // pushed as control events; ticking them would clobber it.
     const backend = workspace.backendFor(t.origin);
     if (!backend.caps.clientStatus) continue;
     sniffing ??= backend;
     if (!t.ptyId) {
-      settleDetachedThread(t);
+      // A parked local PTY is detached but still alive (workspace switch). Keep
+      // its status + dot colour until the pane reattaches; demoting it to idle
+      // would flatten the ping the user expects to stay lit.
+      if (parkedLocal.has(t.id)) continue;
+      forgetThread(t.id);
+      if (t.status === "ready" || t.status === "running" || t.status === "waiting") {
+        app.setThreadStatus(t.id, "idle");
+      }
       continue;
     }
     if (isFinished(t.status)) {
@@ -614,28 +555,72 @@ function tick() {
     // the stored key: it kills PTYs, and its per-agent opt-in is a setting the
     // user made against the icons they can see, not against an inferred one.
     const iconKey = t.iconKey ?? detectIconKey(t.cmd, t.label);
-    const query = turnQueryFor(t, iconKey);
-    if (query) {
-      queries.push(query);
-      // Asked here rather than after the reading: the answer comes from the
-      // previous poll, and an agent that walked itself into a worktree we did
-      // not open has to be noticed whatever this pass then reads off its screen.
+    if (iconKey && iconKey !== "terminal") {
+      queries.push({
+        kind: iconKey,
+        sessionId: t.sessionId ?? null,
+        cwd: threadCwd(t, app.projectById(t.projectId)) ?? "",
+      });
       noticeDeclaredCwd({
         thread: t,
         project: app.projectById(t.projectId),
-        declared: agentTurns.cwdOf(query.kind, t.sessionId),
+        declared: agentTurns.cwdOf(iconKey, t.sessionId),
         recognize: (repo, path) => backend.worktree.recognize(repo, path),
         persist: (path) =>
           app.upsertThread({ ...t, args: [...t.args], worktreePath: path }),
       });
     }
-
-    // The reading is applied before auto-sleep looks at the row, because what it
-    // writes is exactly what makes a thread a candidate.
     const reading = read(t, iconKey);
-    if (reading) applyReading(t, backend, reading, now);
-    else settleUnreadThread(t, now);
-    updateAutoSleep(t, visible);
+    if (reading) {
+      // Before the status is applied, so a turn short enough to open and close
+      // between two ticks still gets both of its ends: the dot may never have
+      // moved, and the checkpoints are what the diff is made of.
+      noteDeclaredTurn(t, backend, reading.declared);
+      // Stamped from `active`, not from the dot: a thread waiting on a prompt, or
+      // one whose agent finished while its shell runs on, is doing something even
+      // though it is not the agent thinking. This stamp is what auto-sleep reads.
+      if (reading.active) lastWorkingAt.set(t.id, now);
+      const reason = reading.waitingFor?.trim();
+      if (reading.status === "waiting" && reason) waitingReason.set(t.id, reason);
+      else waitingReason.delete(t.id);
+      const next = reading.status;
+      if (t.status !== next) {
+        app.setThreadStatus(t.id, next);
+        recordPhase(backend, t, next);
+      }
+      // The same call the control-event path makes for a thread this sweep is
+      // not allowed to judge, so the two say the same things on the same terms.
+      announceStatus(t, next);
+    } else {
+      // Nothing answered: no emulator holds this thread's rows and its agent
+      // declares nothing. Left as it was, a `running` thread here would never be
+      // revisited by anything, so it stays lit and, being lit, stays out of
+      // auto-sleep's reach with its PTY held for the life of the window. Demoted
+      // on the stamps alone, the way the server does it with no emulator either.
+      // No notification: this is the absence of evidence, not a turn that ended.
+      const settled = settleUnread(
+        t.status,
+        Math.max(
+          lastWorkingAt.get(t.id) ?? 0,
+          lastOutputAt.get(t.id) ?? 0,
+          lastTranscriptAt.get(t.id) ?? 0,
+        ),
+        now,
+      );
+      if (settled) {
+        app.setThreadStatus(t.id, settled);
+        prevStatus.set(t.id, settled);
+      }
+    }
+
+    // Only a settled `ready` is a candidate. `waiting` is excluded by being its
+    // own status, and a `ready` thread whose shell is still running is excluded by
+    // the activity stamp `maybeAutoClose` checks.
+    if (t.status === "ready" && !visible.has(t.id)) {
+      maybeAutoClose(t.id, t.iconKey);
+    } else {
+      idleSince.delete(t.id);
+    }
   }
 
   if (sniffing) agentTurns.poll(sniffing, queries);

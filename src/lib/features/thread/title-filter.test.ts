@@ -1,7 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { isGenericTitle } from "./title-filter";
+import { isGenericTitle, cleanOscTitle } from "./title-filter";
+
+describe("cleanOscTitle", () => {
+  it("keeps the Codex task name stable across title progress frames", () => {
+    for (const frame of ["⠋", "⠙", "⠹", ""]) {
+      expect(cleanOscTitle(`Fix login ${frame} | project`, "/work/project")).toBe("Fix login");
+    }
+  });
+
+  it("preserves meaningful separators and other providers' titles", () => {
+    expect(cleanOscTitle("API | Fix login ⠋ | project", "C:\\work\\project")).toBe("API | Fix login");
+    expect(cleanOscTitle("API | design", "/work/project")).toBe("API | design");
+    expect(cleanOscTitle("✻ Fix login")).toBe("Fix login");
+  });
+});
 
 describe("isGenericTitle", () => {
+  it("drops saved Codex attachment and injected-context titles", () => {
+    expect(isGenericTitle('<image name="[Image #1]" path="C:\\Temp\\shot.png">')).toBe(true);
+    expect(isGenericTitle("<recommended_plugins>")).toBe(true);
+    expect(isGenericTitle("Image upload support")).toBe(false);
+  });
+  it("rejects Codex title-generation placeholders, including persisted titles", () => {
+    for (const title of ["renaming... ⠋ | project", "renaming\u2026 ⠙ | project", "renaming...", "⠋ | project"]) {
+      expect(isGenericTitle(title, "/work/project"), title).toBe(true);
+    }
+    expect(isGenericTitle("Renaming files safely | project", "/work/project")).toBe(false);
+  });
   it("treats brand names as generic so the user's label survives", () => {
     for (const title of ["claude", "Claude Code", "  CODEX  ", "GitHub Copilot"]) {
       expect(isGenericTitle(title), title).toBe(true);

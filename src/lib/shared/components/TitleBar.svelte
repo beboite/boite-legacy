@@ -6,12 +6,10 @@
   import { invoke } from "@tauri-apps/api/core";
   import { platform as detectPlatform } from "@tauri-apps/plugin-os";
   import { hasTauri } from "$lib/backend/env";
-  import { workspace } from "$lib/backend";
   import { app } from "$lib/app/store.svelte";
   import { settings } from "$lib/features/settings/store.svelte";
   import { homeAvailable } from "$lib/features/settings/homeAvailable";
-  import { addProjectByPath } from "$lib/features/project/api";
-  import { launchBlankTerminal } from "$lib/features/thread/api";
+  import { goHome } from "$lib/features/home/goHome";
   import { t } from "$lib/i18n/index.svelte";
   import WorkspaceToggle from "$lib/features/workspace/WorkspaceToggle.svelte";
   import Minus from "@lucide/svelte/icons/minus";
@@ -28,9 +26,9 @@
   import ContextMenu from "$lib/shared/components/ContextMenu.svelte";
   import type { ContextMenuItem } from "$lib/shared/components/ContextMenu.svelte";
   import {
-    closePanelPane,
     openPane,
     panePresence,
+    togglePanelPane,
     type PanelKind,
   } from "$lib/features/panes/open";
   import { editorStore } from "$lib/features/editor/store.svelte";
@@ -38,6 +36,7 @@
   import FileCode from "@lucide/svelte/icons/file-code";
   import Spline from "@lucide/svelte/icons/spline";
   import { whip } from "$lib/features/whip/store.svelte";
+  import { neverStarted } from "$lib/domain/thread-status";
   import type { MessageKey } from "$lib/i18n/messages";
   import {
     mcpPulse,
@@ -175,35 +174,16 @@
   /**
    * One button per panel, answering "is this on screen anywhere".
    *
-   * A panel may be docked or opened by an agent in a pane, so the button answers
-   * for either location and closes whichever one is open.
-   *
-   * The docked half stops counting under the info-box experiment: the column is
-   * not drawn there, but the setting saying which tab it was on survives, so the
-   * button would have been lit for a panel nobody can see and no press could
-   * turn off.
+   * One location to answer for, now that the docked column is gone: a panel is
+   * a pane, whether the user opened it or an agent did.
    */
   function panelShowing(kind: PanelKind): boolean {
-    const docked =
-      !settings.state.experimentInfoBox &&
-      settings.rightPanelFor(app.currentProjectId) === kind;
-    return docked || panePresence(kind) !== null;
+    return panePresence(kind) !== null;
   }
 
-  /**
-   * The experiment takes the column away, not the panels. These three used to
-   * be hidden along with it, which is how turning it on left the todo list, the
-   * git panel and the files with no button anywhere in the window — the palette
-   * had dropped its three commands for the same reason. A pane is where every
-   * other non-terminal surface goes, so that is where they open instead.
-   */
+  /** The three states of that button; see `togglePanelPane`. */
   function togglePanel(kind: PanelKind) {
-    if (closePanelPane(kind)) return;
-    if (settings.state.experimentInfoBox) {
-      openPane({ kind });
-      return;
-    }
-    settings.toggleRightPanel(app.currentProjectId, kind);
+    togglePanelPane(kind);
   }
 
   /**
@@ -273,38 +253,13 @@
   const homeShown = $derived(homeAvailable(settings.state));
   const onHome = $derived(homeShown && app.view === "home");
 
-  function showTerminal() {
-    app.view = "terminal";
-    app.mobileTab = "terminal";
-  }
+  // A launch that died in the spawn catch never had a process, so counting it
+  // as a terminal made the folder-is-gone case read as "1 terminal" for a
+  // terminal nobody could see.
+  const liveThreads = $derived(
+    app.threads.filter((thread) => !neverStarted(thread.status, !!thread.ptyId)).length,
+  );
 
-  function showHome() {
-    app.view = "home";
-    app.mobileTab = "home";
-  }
-
-  async function goHome() {
-    if (homeShown) {
-      if (onHome) showTerminal();
-      else showHome();
-      return;
-    }
-    if (app.view === "settings") {
-      showTerminal();
-      return;
-    }
-    if (workspace.mode === "local") return;
-    const root = await workspace
-      .backendFor("remote")
-      .scope.workspaceRoot()
-      .catch(() => null);
-    if (!root) return;
-    const project = await addProjectByPath(
-      root,
-      workspace.isDynamic ? "remote" : undefined,
-    );
-    if (project) await launchBlankTerminal(project.id);
-  }
 </script>
 
 <div
@@ -355,11 +310,11 @@
     >
       <PanelLeft class="size-[15px]" />
     </button>
-    <span class="ml-1.5 hidden text-xs text-muted-foreground/70 md:inline">
+    <span class="ml-1.5 hidden text-xs text-muted-2 md:inline">
       {t("titlebar.status", {
-        threadsCount: app.threads.length,
+        threadsCount: liveThreads,
         threadsLabel: t(
-          app.threads.length === 1 ? "titlebar.threadSingle" : "titlebar.threadPlural",
+          liveThreads === 1 ? "titlebar.threadSingle" : "titlebar.threadPlural",
         ),
         projectsCount: app.projects.length,
         projectsLabel: t(
@@ -398,8 +353,9 @@
         <span class="text-xs tabular-nums">{openHere}</span>
       </button>
     {/if}
-    <!-- Drawn under the info-box experiment too: it replaces the docked column,
-         and `togglePanel` opens these in a pane while it is on. -->
+    <!-- Each one opens its panel as a pane leaf beside whatever is on screen.
+         Pressed reads "this panel is a pane in the group you are looking at",
+         which is the only place it can be. -->
     {#each onHome ? [] : PANEL_BUTTONS as panel (panel.kind)}
       {@const open = panelShowing(panel.kind)}
       {@const Icon = panel.icon}

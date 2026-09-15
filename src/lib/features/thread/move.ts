@@ -219,6 +219,12 @@ export async function moveThreadToProject(
   const toCwd = worktreePath ?? target.cwd;
 
   const resumable = await carryTranscript(thread, fromCwd, toCwd);
+  // Everything above can take seconds, the kill alone up to five, and a close
+  // can land in that time. `upsertThread` would push the closed row back into
+  // the list and the database.
+  if (!app.hasThread(thread.id)) {
+    return { ok: false, reason: "the thread was closed during the move" };
+  }
 
   const moved: Thread = {
     ...thread,
@@ -267,7 +273,7 @@ export async function moveThreadToProject(
   // Mounting a terminal is what spawns its PTY, so activating a sleeping thread
   // would launch it. The briefing stays queued instead and is handed over
   // whenever the user does wake it, in the folder it woke up in.
-  if (wasAlive) {
+  if (wasAlive && app.hasThread(thread.id)) {
     app.activeThreadId = thread.id;
     app.view = "terminal";
     app.bumpRespawn(thread.id);

@@ -457,7 +457,15 @@ impl Git {
     }
 
     pub(super) fn prepare(self, host: &dyn Host) -> Result<Ready, String> {
+        let sizes = matches!(self, Git::WorktreeSizes { .. });
         for path in self.caller_paths() {
+            // A prunable worktree is one of the rows sizes are asked for, and its
+            // directory is gone by definition. Nothing under a missing path gets
+            // walked, so there is nothing to guard, and refusing it failed the
+            // whole panel over one row.
+            if sizes && !Path::new(path).exists() {
+                continue;
+            }
             host.roots().ensure_allowed(path)?;
         }
         // The one command with something left for the host to say, and the one
@@ -722,6 +730,24 @@ mod tests {
                 "{method} refused for the wrong reason: {err}"
             );
         }
+    }
+
+    #[test]
+    fn a_worktree_whose_directory_is_gone_sizes_as_nothing() {
+        let root = scratch("sizes-root");
+        let roots = ProjectRoots::default();
+        roots.replace(vec![root.to_string_lossy().to_string()]);
+        let host = Scoped::new(&roots);
+
+        let paths = [root.clone(), root.join("pruned")];
+        let paths: Vec<&str> = paths.iter().map(|p| p.to_str().unwrap()).collect();
+        let sizes = Command::decode("worktree.sizes", &json!({ "paths": paths }))
+            .unwrap()
+            .prepare(&host, Grant::Local)
+            .unwrap()
+            .run()
+            .unwrap();
+        assert_eq!(sizes, json!([0, 0]));
     }
 
     /// `worktree.remove` takes two paths and both are the caller's. A boundary

@@ -85,9 +85,8 @@ ws.onmessage = (ev) => {
     const buf = new Uint8Array(ev.data);
     const chunk = dec.decode(buf.slice(17));
     collected += chunk;
-    // ConPTY queries cursor position (DSR, ESC[6n) on startup and withholds
-    // child output until the terminal answers. In production xterm replies;
-    // here we answer manually so output flows.
+    // A child may ask where the cursor is (DSR, ESC[6n) and wait for the
+    // answer. In production xterm replies; here we answer manually.
     if (chunk.indexOf("\x1b[6n") >= 0) ws.send(inputFrame(THREAD_ID, "\x1b[1;1R"));
   }
 };

@@ -5,18 +5,18 @@
 //! with a channel to the webview, a scrollback ring and a detach that has to
 //! keep the child alive. None of that is a command with an answer.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
+use serde::Deserialize;
 use tauri::{
     AppHandle, Manager, State,
     ipc::{Channel, InvokeBody, Request},
 };
 
-
 use boite_core::pty::{PtyManager, PtySpawnArgs};
 
 use crate::local_pty::{LocalSessions, LocalSink};
-
 
 // Wire shape consumed by the webview xterm bridge. Output is base64-encoded
 // here (not in core): a Vec<u8> would serialize as a JSON number array,
@@ -148,11 +148,24 @@ pub fn pty_write(manager: State<'_, PtyManager>, request: Request<'_>) -> Result
         .get("x-pty-id")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| "missing x-pty-id header".to_string())?;
-    let bytes: &[u8] = match request.body() {
-        InvokeBody::Raw(b) => b.as_slice(),
-        InvokeBody::Json(_) => return Err("expected raw body".into()),
-    };
-    manager.write(id, bytes)
+    manager.write(id, &write_payload(request.body())?)
+}
+
+/// The bytes of one write, whichever of Tauri's two transports carried them.
+///
+/// The custom protocol hands the `Uint8Array` over as a raw body. The first
+/// time one of its fetches fails, the webview switches to `postMessage` for the
+/// rest of its life, and that transport serializes the same array as JSON
+/// numbers. Refusing that shape turned one failed fetch into a terminal that
+/// took no keystrokes, and into every new ConPTY waiting forever on the cursor
+/// report the terminal could no longer send back, which drew nothing at all.
+fn write_payload(body: &InvokeBody) -> Result<Cow<'_, [u8]>, String> {
+    match body {
+        InvokeBody::Raw(bytes) => Ok(Cow::Borrowed(bytes)),
+        InvokeBody::Json(value) => Vec::<u8>::deserialize(value)
+            .map(Cow::Owned)
+            .map_err(|e| format!("pty write body is not bytes: {e}")),
+    }
 }
 
 /// One keystroke into a terminal that is waiting on a person, keyed by thread.
@@ -202,4 +215,28 @@ pub async fn pty_kill(
         .map_err(|e| format!("pty kill task failed: {e}"))?;
     sessions.remove_by_pty(&pty_id);
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_write_reads_the_same_bytes_from_either_transport() {
+        let raw = InvokeBody::Raw(b"hi\r\x1b[1;1R".to_vec());
+        let json = InvokeBody::Json(serde_json::json!([104, 105, 13, 27, 91, 49, 59, 49, 82]));
+        assert_eq!(&*write_payload(&raw).unwrap(), b"hi\r\x1b[1;1R");
+        assert_eq!(&*write_payload(&json).unwrap(), b"hi\r\x1b[1;1R");
+    }
+
+    #[test]
+    fn a_json_body_that_is_not_bytes_is_refused() {
+        for bad in [
+            serde_json::json!({ "id": "x" }),
+            serde_json::json!([256]),
+            serde_json::json!("hi"),
+        ] {
+            assert!(write_payload(&InvokeBody::Json(bad)).is_err());
+        }
+    }
 }

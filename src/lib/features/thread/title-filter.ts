@@ -148,12 +148,30 @@ function isToolCommandTitle(direct: string, tool: string): boolean {
   return first.length > 0 && !TOOL_PROSE.has(first);
 }
 
+// Codex appends title-generation progress and the cwd to its conversation name.
+// Only remove a directory suffix when it matches this thread's cwd.
+export function cleanOscTitle(title: string, cwd?: string | null): string {
+  let clean = title.trim();
+  const name = cwd?.replace(/\\/g, "/").replace(/\/+$/, "").split("/").pop();
+  const separator = clean.lastIndexOf(" | ");
+  if (name && separator >= 0 && clean.slice(separator + 3).toLowerCase() === name.toLowerCase()) {
+    clean = clean.slice(0, separator).trim();
+  }
+  clean = clean.replace(/\s*[\u2801-\u28ff]+$/u, "").trim();
+  const first = clean.search(/[\p{L}\p{N}]/u);
+  return first >= 0 ? clean.slice(first).trim() : clean;
+}
+
 export function isGenericTitle(
   title: string | null | undefined,
   cwd?: string | null,
 ): boolean {
   if (!title) return false;
-  const direct = title.trim().toLowerCase();
+  if (/^<(?:image(?:\s|>)|\/image>|recommended_plugins(?:\s|>))/i.test(title.trim())) return true;
+  const direct = cleanOscTitle(title, cwd).toLowerCase();
+  const identity = direct.split(" | ", 1)[0].replace(/\s*[\u2801-\u28ff]+$/u, "").trim();
+  if (/^renaming(?:\.{3}|\u2026)$/u.test(identity)) return true;
+  if (!direct && title.trim()) return true;
   if (GENERIC_TITLES.has(direct)) return true;
   const base = normalizeShellPath(title);
   if (base && (GENERIC_TITLES.has(base) || GENERIC_COMMAND_TOOLS.has(base))) return true;

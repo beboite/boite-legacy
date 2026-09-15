@@ -131,6 +131,7 @@ macro_rules! session_finder {
             after_unix_ms: i64,
             exclude_ids: Option<Vec<String>>,
             pty_id: Option<String>,
+            session_id: Option<String>,
         ) -> Result<Value, String> {
             on_bus_with_pty(
                 scope.inner(),
@@ -140,6 +141,7 @@ macro_rules! session_finder {
                     cwd,
                     after_unix_ms,
                     exclude_ids: exclude_ids.unwrap_or_default(),
+                    session_id,
                     own: Own::Pty(pty_id),
                 }
                 .into(),

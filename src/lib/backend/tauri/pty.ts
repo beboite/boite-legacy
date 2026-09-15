@@ -1,5 +1,6 @@
 import { Channel } from "@tauri-apps/api/core";
 import { invoke } from "./ipc";
+import { createPtyWriter } from "./pty-write";
 import type { PtyApi, PtyEvent, PtyOpenArgs } from "../types";
 import type { ThreadReply } from "$lib/domain/awareness";
 
@@ -49,9 +50,7 @@ export const tauriPty: PtyApi = {
     });
   },
 
-  async write(key: string, data: Uint8Array): Promise<void> {
-    await invoke("pty_write", data, { headers: { "x-pty-id": key } });
-  },
+  write: createPtyWriter((key, data) => invoke("pty_write", data, { headers: { "x-pty-id": key } })),
 
   async resize(key: string, cols: number, rows: number): Promise<void> {
     await invoke("pty_resize", { id: key, cols, rows });

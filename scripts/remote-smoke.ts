@@ -113,7 +113,7 @@ const key = await rb.pty.open(
     if (e.type === "output") {
       const chunk = dec.decode(e.bytes);
       out += chunk;
-      // ConPTY DSR: answer the cursor-position query so output flows.
+      // DSR: answer a cursor-position query so a child that asks keeps going.
       if (chunk.indexOf("\x1b[6n") >= 0) {
         void rb.pty.write(key, new TextEncoder().encode("\x1b[1;1R"));
       }

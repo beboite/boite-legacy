@@ -1,6 +1,6 @@
 [package]
 name = "boite-server"
-version = "1.3.4"
+version = "1.4.2"
 description = "Headless boite server: PTY orchestration over WebSocket"
 edition = "2021"
 
@@ -11,6 +11,10 @@ path = "src/main.rs"
 [dependencies]
 boite-core = { path = "../boite-core" }
 boite-agent-api = { path = "../boite-agent-api" }
+# The pilot runtime this host owns: the children, the drivers, stop_all.
+boite-pilot = { path = "../boite-pilot" }
+# The env names a spawned agent reads to know which thread it is.
+boite-identity = { path = "../boite-identity" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "net", "io-util"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
@@ -33,7 +37,7 @@ http = "1"
 # Pure-Rust deflate (miniz_oxide backend, no C) so it cross-compiles to arm64.
 # Used to gzip the one-shot scrollback replay frame.
 flate2 = "1"
-dirs = "6"
+dirs = "7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # A pairing link nobody can type is a pairing flow nobody uses, so it is drawn:

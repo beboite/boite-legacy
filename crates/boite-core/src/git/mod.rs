@@ -121,7 +121,11 @@ pub fn repo_info_blocking(path: &str) -> Result<RepoInfo, String> {
     ]);
     let stdout = match run(cmd) {
         Ok(b) => b,
-        Err(_) => return Ok(empty_repo()),
+        Err(e) if is_not_a_repo(&e) => return Ok(empty_repo()),
+        // A repository git refuses to open, above all one whose folder belongs
+        // to another account, is still a repository. Answering "no repository"
+        // for it hid the reason behind a banner about a folder that has one.
+        Err(e) => return Err(e),
     };
     let text = String::from_utf8_lossy(&stdout);
 
@@ -154,6 +158,16 @@ pub fn repo_info_blocking(path: &str) -> Result<RepoInfo, String> {
         }
     }
     Ok(info)
+}
+
+/// Whether git's refusal means there is no repository here, rather than one it
+/// could not read. `git()` pins `LC_ALL=C`, so the sentences are git's English
+/// ones. Dubious ownership is ruled out first because its message quotes the
+/// repository's path, and a path can contain anything.
+fn is_not_a_repo(stderr: &str) -> bool {
+    !stderr.contains("dubious ownership")
+        && (stderr.contains("not a git repository")
+            || stderr.contains("must be run in a work tree"))
 }
 
 // Directories that never hold a user's nested repo but can be huge.
@@ -1131,9 +1145,32 @@ pub fn commit_blocking(path: &str, message: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_repos_blocking, repo_relative};
+    use super::{find_repos_blocking, is_not_a_repo, repo_info_blocking, repo_relative};
     use std::fs;
     use std::path::Path;
+
+    #[test]
+    fn only_a_missing_repository_reads_as_no_repository() {
+        assert!(is_not_a_repo(
+            "fatal: not a git repository (or any of the parent directories): .git"
+        ));
+        assert!(is_not_a_repo("fatal: this operation must be run in a work tree"));
+        assert!(!is_not_a_repo(
+            "fatal: detected dubious ownership in repository at 'D:/not a git repository'\n\
+             To add an exception for this directory, call:"
+        ));
+        assert!(!is_not_a_repo("git not found or failed to start: program not found"));
+    }
+
+    #[test]
+    fn a_plain_folder_answers_no_repository_without_failing() {
+        let base = std::env::temp_dir().join(format!("boite-plain-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        let info = repo_info_blocking(base.to_str().unwrap()).unwrap();
+        assert!(!info.is_repo);
+        let _ = fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn repo_relative_rejects_escapes() {

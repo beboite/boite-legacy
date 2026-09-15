@@ -4,10 +4,14 @@
   import { t } from "$lib/i18n/index.svelte";
   import {
     launchFastpick,
+    launchFastpickChat,
     launchTargetProjectId,
     warmWorktreeFor,
   } from "$lib/features/thread/api";
   import { app } from "$lib/app/store.svelte";
+  import { settings } from "$lib/features/settings/store.svelte";
+  import { chatChoiceHarness, pilotCatalog } from "$lib/features/pilot/catalog.svelte";
+  import MessageSquare from "@lucide/svelte/icons/message-square";
   import ShortcutIcon from "$lib/shared/icons/ShortcutIcon.svelte";
   import { fastpick } from "./store.svelte";
   import { iconKeyForKind, modelLabels, type FastpickCombo } from "./combo";
@@ -27,7 +31,7 @@
   /**
    * The fastpick walk itself: harness, provider, model, options, and the launch.
    *
-   * No surface, no placement, no open state — those belong to whoever shows it.
+   * No surface, no placement, no open state: those belong to whoever shows it.
    * It is here rather than inside `FastpickPicker` because the launcher popover
    * shows the same walk in its own box: when this lived in the picker, reaching
    * fastpick from the launcher opened a second floating menu on top of the first,
@@ -80,6 +84,12 @@
   // Drawn on every model row once more than one of them is left: two keys of a site are two
   // accounts, often two bills, and can serve a model under the same name.
   const multiKey = $derived(usableKeys.length > 1);
+  // Whether this walk can end in a conversation rather than a terminal. Off the
+  // harness alone: the provider and the model are the account and the weights,
+  // and neither changes which protocol the program on the other end speaks.
+  const chat = $derived(
+    harness ? chatChoiceHarness(harness.id) : { offered: false, enabled: false },
+  );
   const models = $derived(providerId ? fastpick.models[providerId] ?? null : null);
   // The rows this harness could actually launch. fastpick lists a provider's whole
   // catalogue, credentials included that this harness has no binding for, and picking one
@@ -185,6 +195,13 @@
     void launch(forceScratch);
   }
 
+  /** The same row, opened as a conversation. The name button is the terminal. */
+  function chatModel(m: FastpickModel, e: MouseEvent) {
+    e.stopPropagation();
+    select(m);
+    void launch(e.shiftKey, true);
+  }
+
   function openOptions(m: FastpickModel, e: MouseEvent) {
     e.stopPropagation();
     select(m);
@@ -217,7 +234,7 @@
   // Lands where every other launcher does: the project you are on, or Scratch
   // when you are on none, with shift asking for Scratch outright. No right-click
   // menu though, unlike a shortcut: this walk owns the gesture already.
-  async function launch(forceScratch = false) {
+  async function launch(forceScratch = false, asChat = false) {
     if (!harness || !providerId || !model) return;
     const combo: FastpickCombo = {
       harness: harness.id,
@@ -238,7 +255,12 @@
     onLaunched?.();
     const target = own ?? (await launchTargetProjectId(forceScratch));
     if (!target) return;
-    await launchFastpick(combo, harness, target);
+    // The same combo, on the other runtime. The route travels into the row as
+    // the instance (`fastpick:<provider>:<model>`), which is the shape
+    // `pilot.catalog` answers, so the conversation opens on the endpoint the
+    // user just picked rather than on the driver's own account.
+    if (asChat) await launchFastpickChat(combo, harness, target);
+    else await launchFastpick(combo, harness, target);
   }
 
   function sourceLabel(source: FastpickSource): string {
@@ -376,9 +398,13 @@
     // This menu appearing is a launch that has not picked its combination yet, and
     // walking the panes takes long enough that the checkout is finished before the
     // click lands. The project switch is the other sign, but it never fires for the
-    // project the app came up on — reload, open this, launch, and the thread was
+    // project the app came up on: reload, open this, launch, and the thread was
     // paying for its own worktree in front of a black terminal.
     warmWorktreeFor(app.projects.find((p) => p.id === app.currentProjectId) ?? null);
+    // Which harnesses have a protocol, asked once and only when the experiment
+    // is armed: a boite with the switch off must not pay an IPC hop for a button
+    // it will never draw.
+    if (settings.state.experimentPilot) void pilotCatalog.ensure();
   });
 </script>
 
@@ -437,7 +463,7 @@
         type="text"
         autocomplete="off"
         spellcheck="false"
-        class="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
+        class="w-full bg-transparent text-sm text-foreground placeholder:text-muted-2 focus:outline-none focus-visible:focus-ring-inset"
         placeholder={t("fastpick.search")}
         aria-label={t("fastpick.search")}
       />
@@ -446,12 +472,12 @@
 
   <div class="flex min-h-0 flex-col scroll-pane overflow-y-auto p-1">
     {#if fastpick.loading}
-      <div class="px-2 py-1.5 text-xs text-muted-foreground">{t("common.loading")}</div>
+      <div class="px-2 py-1.5 text-sm text-muted-foreground">{t("common.loading")}</div>
     {:else if fastpick.error}
-      <div class="px-2 py-1.5 text-xs text-danger">{fastpick.error}</div>
+      <div class="px-2 py-1.5 text-sm text-danger">{fastpick.error}</div>
     {:else if pane === "harness"}
       {#if fastpick.harnesses.length === 0}
-        <div class="px-2 py-1.5 text-xs text-muted-foreground">
+        <div class="px-2 py-1.5 text-sm text-muted-foreground">
           {t("fastpick.noHarness")}
         </div>
       {/if}
@@ -459,7 +485,7 @@
         <button
           type="button"
           role="menuitem"
-          class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground/80 transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+          class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
           onclick={() => pickHarness(h.id)}
         >
           <ShortcutIcon iconKey={iconKeyForKind(h.kind)} size={14} color={null} />
@@ -473,7 +499,7 @@
         <button
           type="button"
           role="menuitem"
-          class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground/80 transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+          class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
           onclick={() => pickProvider(p.id)}
         >
           <span class="min-w-0 truncate font-medium">{p.name}</span>
@@ -489,7 +515,7 @@
                before walking in: the model list is going to be the three of them at once. -->
           {#if keys.length > 1}
             <span
-              class="flex shrink-0 items-center gap-0.5 text-2xs text-muted-foreground/70"
+              class="flex shrink-0 items-center gap-0.5 text-xs text-muted-2"
               title={t("fastpick.keyCount", { count: keys.length })}
             >
               <KeyRound class="size-2.5" />
@@ -502,25 +528,25 @@
       {/each}
     {:else if pane === "model"}
       {#if providerId && fastpick.loadingModels === providerId}
-        <div class="px-2 py-1.5 text-xs text-muted-foreground">{t("common.loading")}</div>
+        <div class="px-2 py-1.5 text-sm text-muted-foreground">{t("common.loading")}</div>
       {:else if providerId && fastpick.modelsError[providerId]}
-        <div class="px-2 py-1.5 text-xs text-danger">
+        <div class="px-2 py-1.5 text-sm text-danger">
           {fastpick.modelsError[providerId]}
         </div>
       {:else if models}
-        <div class="px-2 pb-1 text-2xs text-muted-foreground/70">
+        <div class="px-2 pb-1 text-xs text-muted-2">
           {sourceLabel(models.source)}{query ? ` · ${shown.length}/${items.length}` : ""}
         </div>
         <!-- fastpick already writes which credential failed and why, so the line is shown
              rather than replaced: a key whose catalogue never arrived is a list that is
              quietly short, and the reason is usually the fix. -->
         {#each models.source.failed ?? [] as failure (failure)}
-          <div class="px-2 pb-1 text-2xs leading-snug text-[var(--color-warning)]">
+          <div class="px-2 pb-1 text-xs leading-snug text-[var(--color-warning)]">
             {failure}
           </div>
         {/each}
         {#if shown.length === 0}
-          <div class="px-2 py-1.5 text-xs text-muted-foreground">
+          <div class="px-2 py-1.5 text-sm text-muted-foreground">
             {t("fastpick.noMatch")}
           </div>
         {/if}
@@ -533,7 +559,7 @@
             <button
               type="button"
               role="menuitem"
-              class="flex min-w-0 flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground/80 transition group-hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+              class="flex min-w-0 flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground transition group-hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
               onclick={(e) => pickModel(m, e.shiftKey)}
             >
               <span class="min-w-0 truncate font-medium">{nameOf(m)}</span>
@@ -544,7 +570,7 @@
                 {@const key = keyForModel(usableKeys, m)}
                 {#if key}
                   <span
-                    class="min-w-0 max-w-28 shrink truncate text-2xs text-muted-foreground/70"
+                    class="min-w-0 max-w-28 shrink truncate text-xs text-muted-2"
                     class:text-danger={key.needsKey && !key.keyPresent}
                     title={key.needsKey && !key.keyPresent ? t("fastpick.noKey") : keyLabel(key)}
                   >
@@ -553,11 +579,23 @@
                 {/if}
               {/if}
               {#if m.contextWindow}
-                <span class="shrink-0 tabular-nums text-2xs font-medium text-muted-foreground/70">
+                <span class="shrink-0 tabular-nums text-xs font-medium text-muted-2">
                   {Math.round(m.contextWindow / 1000)}K
                 </span>
               {/if}
             </button>
+            {#if chat.offered}
+              <button
+                type="button"
+                class="flex shrink-0 items-center border-l border-border/60 px-1.5 text-muted-2 transition hover:bg-[var(--color-surface-3)] hover:text-foreground focus-visible:bg-[var(--color-surface-3)] focus-visible:text-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 group-hover:text-muted-foreground"
+                disabled={!chat.enabled}
+                onclick={(e) => chatModel(m, e)}
+                aria-label={t("pilot.chat")}
+                use:tip={chat.enabled ? t("pilot.chat") : t("pilot.noDriver")}
+              >
+                <MessageSquare class="size-3.5" />
+              </button>
+            {/if}
             <!-- A second target, and it has to look like one: clicking the name
                  launches, clicking here opens effort and prompts instead. It was
                  a bare chevron the same colour as the row it sat on, which reads
@@ -567,7 +605,7 @@
             {#if hasOptions}
               <button
                 type="button"
-                class="flex shrink-0 items-center rounded-r border-l border-border/60 px-1.5 text-muted-foreground/70 transition hover:bg-[var(--color-surface-3)] hover:text-foreground focus-visible:bg-[var(--color-surface-3)] focus-visible:text-foreground focus-visible:outline-none group-hover:text-foreground/70"
+                class="flex shrink-0 items-center rounded-r border-l border-border/60 px-1.5 text-muted-2 transition hover:bg-[var(--color-surface-3)] hover:text-foreground focus-visible:bg-[var(--color-surface-3)] focus-visible:text-foreground focus-visible:outline-none group-hover:text-muted-foreground"
                 onclick={(e) => openOptions(m, e)}
                 aria-label={t("fastpick.options")}
                 use:tip={t("fastpick.options")}
@@ -580,7 +618,7 @@
       {/if}
     {:else if pane === "options" && model}
       {#if harness?.supportsEffort && model.effort.length > 0}
-        <div class="px-2 pb-1 pt-1 text-2xs uppercase tracking-wide text-muted-foreground/70">
+        <div class="px-2 pb-1 pt-1 text-xs uppercase tracking-wide text-muted-2">
           {t("fastpick.effort")}
         </div>
         {#each model.effort as level (level)}
@@ -588,7 +626,7 @@
             type="button"
             role="menuitemradio"
             aria-checked={effort === level}
-            class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground/80 transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+            class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
             onclick={() => (effort = level)}
           >
             <span
@@ -609,7 +647,7 @@
            section on an empty match hid the door with it. -->
       {#if harness?.supportsSystemPrompts && (promptStems.length > 0 || fastpick.allPrompts.length > 0)}
         <div
-          class="flex items-center gap-2 px-2 pb-1 pt-2 text-2xs uppercase tracking-wide text-muted-foreground/70"
+          class="flex items-center gap-2 px-2 pb-1 pt-2 text-xs uppercase tracking-wide text-muted-2"
         >
           <span>{t("fastpick.systemPrompt")}</span>
           <!-- The same door `a` opens in fastpick's own menu: the files matching the model
@@ -619,7 +657,7 @@
           {#if fastpick.allPrompts.length > model.prompts.length}
             <button
               type="button"
-              class="ml-auto rounded px-1 py-0.5 text-2xs normal-case transition hover:bg-accent hover:text-foreground"
+              class="ml-auto rounded px-1 py-0.5 text-xs normal-case transition hover:bg-accent hover:text-foreground"
               class:text-foreground={allPrompts}
               onclick={() => (allPrompts = !allPrompts)}
             >
@@ -632,7 +670,7 @@
             type="button"
             role="menuitemcheckbox"
             aria-checked={promptChecked(stem)}
-            class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground/80 transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+            class="flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-foreground transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
             onclick={() => togglePrompt(stem)}
           >
             <span
@@ -645,18 +683,37 @@
                 <Check class="size-2.5 text-[var(--color-surface-2)]" strokeWidth={3} />
               {/if}
             </span>
-            <span class="min-w-0 truncate text-xs">{stem}</span>
+            <span class="min-w-0 truncate text-sm">{stem}</span>
           </button>
         {/each}
       {/if}
-      <button
-        type="button"
-        role="menuitem"
-        class="mt-2 rounded bg-[var(--color-surface-3)] px-2 py-1.5 text-sm font-medium text-foreground transition hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-        onclick={(e) => void launch(e.shiftKey)}
-      >
-        {t("fastpick.launch")}
-      </button>
+      <!-- Terminal or Chat on the same row, the way the shortcut bar offers the
+           two: the combination is one thing to launch and the runtime is how.
+           Greyed with the reason where the harness has no protocol yet, never
+           hidden, so the answer is the same wherever it is asked. -->
+      <div class="mt-2 flex items-stretch gap-0.5">
+        <button
+          type="button"
+          role="menuitem"
+          class="flex-1 rounded bg-[var(--color-surface-3)] px-2 py-1.5 text-sm font-medium text-foreground transition hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+          onclick={(e) => void launch(e.shiftKey)}
+        >
+          {t("fastpick.launch")}
+        </button>
+        {#if chat.offered}
+          <button
+            type="button"
+            role="menuitem"
+            class="flex shrink-0 items-center rounded bg-[var(--color-surface-3)] px-2 text-muted-2 transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={!chat.enabled}
+            onclick={(e) => void launch(e.shiftKey, true)}
+            aria-label={t("pilot.chat")}
+            use:tip={chat.enabled ? t("pilot.chat") : t("pilot.noDriver")}
+          >
+            <MessageSquare class="size-3.5" />
+          </button>
+        {/if}
+      </div>
     {/if}
   </div>
 </div>

@@ -30,14 +30,13 @@
   import { statusEngine } from "$lib/features/thread/statusEngine";
   import { watchWindowFocus } from "$lib/app/focus.svelte";
   import PaneShell from "$lib/features/panes/PaneShell.svelte";
-  import SidePanel from "$lib/features/panes/SidePanel.svelte";
   import PaneOverlay from "$lib/features/panes/PaneOverlay.svelte";
   import { parseThreadLink } from "$lib/domain/awareness";
   import PaneDropOverlay from "$lib/features/panes/PaneDropOverlay.svelte";
   import GitPanel from "$lib/features/git/GitPanel.svelte";
   import ExplorerPanel from "$lib/features/explorer/ExplorerPanel.svelte";
-  // Already in the entry graph through SidePanel, so the phone's tab costs
-  // nothing the window was not downloading anyway.
+  // Already in the entry graph as a pane leaf, so the phone's tab costs nothing
+  // the window was not downloading anyway.
   import TodoPanel from "$lib/features/todo/TodoPanel.svelte";
   import MobileTopBar from "$lib/features/mobile/MobileTopBar.svelte";
   import MobileBottomBar from "$lib/features/mobile/MobileBottomBar.svelte";
@@ -100,8 +99,8 @@
   // Behind import(), a boot that never switches it on never fetches it.
   // Behind import(): a machine whose configuration never differs never fetches
   // the merge tool, and it drags @codemirror/merge and the language table in
-  // behind it. The sync store itself imports none of that, on purpose — a test
-  // asserts it — because the launch pull puts the store on the boot graph.
+  // behind it. The sync store itself imports none of that, on purpose, a test
+  // asserts it, because the launch pull puts the store on the boot graph.
   const SyncMergeView = lazyComponent(
     () => import("$lib/features/sync/SyncMergeOverlay.svelte"),
   );
@@ -140,7 +139,7 @@
   // Dynamic mode gets none of it, dropped included. Two sources are live at
   // once and only one of them went away: ringing the whole window says the app
   // is down while the local half keeps working, which is the loudest possible
-  // way to be wrong. What is unreachable is marked where it is instead — the
+  // way to be wrong. What is unreachable is marked where it is instead: the
   // imported project blocks in the sidebar, and the pane of an open remote
   // thread, both below.
   const outlineClass = $derived.by(() => {
@@ -155,8 +154,8 @@
   );
 
   $effect(() => {
-    // Which threads, not how many. A count cannot see a replacement — close
-    // four and launch four and it reads 60 both times — and a group this never
+    // Which threads, not how many. A count cannot see a replacement, close
+    // four and launch four and it reads 60 both times, and a group this never
     // made is a thread with no terminal drawn at all, since the wrapper below
     // needs a group and a rect. Nothing then mounts, nothing spawns, and
     // nothing is logged. `projectId` too: a move keeps the same id, and without
@@ -187,15 +186,23 @@
     );
   });
 
+  // Selecting a thread focuses its pane, and that is all: the write is
+  // untracked because it used to read the field it writes, which subscribed the
+  // effect to its own output (AGENTS.md, rule 4). Every later focus change in
+  // that group, a panel opened beside the terminal, a chip tapped on the
+  // phone's pane strip, re-ran this and was put straight back on the thread.
   $effect(() => {
     const id = app.activeThreadId;
     if (!id) return;
     const g = paneStore.groupOf(id);
-    if (g && g.focusedPaneId !== id) g.focusedPaneId = id;
+    if (!g) return;
+    untrack(() => {
+      if (g.focusedPaneId !== id) g.focusedPaneId = id;
+    });
   });
 
-  // The project the app came up on. Nobody asked for a thread in it — it is
-  // where the last session happened to stop — so warming it would make every
+  // The project the app came up on. Nobody asked for a thread in it, it is
+  // where the last session happened to stop, so warming it would make every
   // single start pay for a checkout and a copy of the build artifacts in the
   // background. `undefined` until the effect below has run once, which is how
   // that first value is told from a project the user moved to.
@@ -317,8 +324,8 @@
   /**
    * Says so when the thread the user is looking at has no terminal drawn.
    *
-   * A pane needs three things at once — an entry in `activated`, a group, and a
-   * rect — and failing any of them draws nothing at all. Nothing downstream then
+   * A pane needs three things at once, an entry in `activated`, a group, and a
+   * rect, and failing any of them draws nothing at all. Nothing downstream then
    * runs: no mount, no spawn, no error, and a release log that says the worktree
    * was handed over and stops. That silence is the whole reason this bug outlived
    * three releases, so the three flags are named here rather than reasoned about
@@ -339,6 +346,7 @@
       const rect = group ? paneStore.rectFor(id, group, visible) : null;
       if (activated[id] && group && rect) return;
       logger.warn("panes", `${app.threadById(id)?.label ?? id}: no terminal drawn`, {
+        threadId: id,
         activated: !!activated[id],
         group: group?.id ?? null,
         rect: !!rect,
@@ -468,7 +476,13 @@
   // the first throw, or the rope spawns wherever the pointer was at boot.
   $effect(() => {
     if (settings.state.experimentWhip) void WhipView.ensure();
-    if (settings.state.experimentInfoBox) void InfoBoxView.ensure();
+  });
+
+  // The info box is no longer behind a flag, so its chunk is fetched as soon as
+  // there is a terminal view to draw it over rather than when a switch is
+  // flipped.
+  $effect(() => {
+    if (!mobile) void InfoBoxView.ensure();
   });
 
   // The launch pull, and deliberately not part of the boot.
@@ -496,16 +510,9 @@
   });
 
   // Opening the Files or Git panel is the strongest signal that a file or a
-  // diff is about to be opened; warm the editor before the click lands. Read
-  // off the panes: whether one of those panels is up is a question the pane
-  // tree answers, and the titlebar's own memory of which one is up whether or
-  // not anything is open.
+  // diff is about to be opened; warm the editor before the click lands. The
+  // pane tree is the whole answer now that those panels have no other home.
   $effect(() => {
-    const docked = settings.rightPanelFor(app.currentProjectId);
-    if (docked === "git" || docked === "explorer") {
-      prefetchWhenIdle(EditorView);
-      return;
-    }
     if (panePresence("git") || panePresence("explorer")) {
       prefetchWhenIdle(EditorView);
     }
@@ -579,7 +586,7 @@
     <main class="relative flex min-w-0 flex-1 flex-col" use:toastArea>
       {#if !app.ready}
         <div class="flex h-full items-center justify-center">
-          <p class="text-xs text-muted-foreground/60">{t("common.loading")}</p>
+          <p class="text-sm text-muted-2">{t("common.loading")}</p>
         </div>
       {:else}
         <div
@@ -592,7 +599,7 @@
           {#if app.threads.length === 0 && !activeGroupId}
             <div class="flex h-full items-center justify-center">
               <div class="flex flex-col items-center gap-4 text-center">
-                <span class="text-muted-foreground/40">
+                <span class="text-muted-2">
                   <BoiteLogo size={64} />
                 </span>
                 <p class="text-sm text-muted-foreground">
@@ -605,7 +612,7 @@
                 {#if app.projects.length === 0}
                   <button
                     type="button"
-                    class="rounded-md border border-border bg-[var(--color-surface)] px-3 py-1.5 text-sm text-foreground transition hover:bg-[var(--color-surface-2)]"
+                    class="rounded-md border border-edge bg-[var(--color-surface)] px-3 py-1.5 text-sm text-foreground transition hover:bg-[var(--color-surface-2)]"
                     onclick={() => addProject()}
                   >
                     {t("common.chooseFolder")}
@@ -629,11 +636,11 @@
                 class="flex flex-col items-center gap-5 rounded-lg border border-border bg-[var(--color-surface)]/60 px-10 py-8 shadow-e2"
                 in:fade={{ duration: DUR.slow, easing: easeOutQuint }}
               >
-                <span class="text-muted-foreground/30"><BoiteLogo size={40} /></span>
+                <span class="text-muted-2"><BoiteLogo size={40} /></span>
                 <p class="text-base text-muted-foreground">
                   {t("welcome.pickThread")}
                 </p>
-                <div class="grid grid-cols-[auto_auto] gap-x-6 gap-y-2 text-xs text-muted-foreground/70">
+                <div class="grid grid-cols-[auto_auto] gap-x-6 gap-y-2 text-xs text-muted-2">
                   {#each WELCOME_KEYS as row, i (row.label)}
                     <span
                       class="text-right"
@@ -683,18 +690,29 @@
                 style:visibility={visible ? "visible" : "hidden"}
                 aria-hidden={!visible}
               >
-                <PaneShell {group} />
+                <PaneShell {group} {mobile} />
               </div>
             {/each}
 
             {#each app.threads as thread (thread.id)}
               {@const group = paneStore.groupOf(thread.id)}
+              <!-- On a phone the group draws one pane at a time, so being in the
+                   group on screen is no longer enough to be on the screen: the
+                   terminals of the other panes are laid out at the same
+                   rectangle and would stack on top of the one being read. -->
               {@const visible =
-                group?.id === activeGroupId && terminalActive}
+                group?.id === activeGroupId &&
+                terminalActive &&
+                (!mobile || group.focusedPaneId === thread.id)}
               {@const focused =
                 visible && group?.focusedPaneId === thread.id}
               {@const rect = group ? paneStore.rectFor(thread.id, group, visible) : null}
-              {#if activated[thread.id] && rect && group}
+              <!-- A pilot row has no PTY, so nothing is overlaid on its
+                   rectangle: its pane is a component in the tree and the shell
+                   already drew it. Mounting a Terminal here is what spawns a
+                   PTY, so this guard is what keeps a chat thread from starting
+                   a shell nobody asked for. -->
+              {#if activated[thread.id] && rect && group && thread.runtime !== "pilot"}
                 <div
                   class="absolute"
                   style:left="{rect.x}px"
@@ -732,8 +750,7 @@
                     {focused}
                     offline={boiteDown && thread.origin === "remote"}
                   />
-                  <!-- The experiment that replaces the column, one per
-                       terminal: in split view each pane runs its own worktree,
+                  <!-- One box per terminal: in split view each pane runs its own worktree,
                        so a single box over the whole area could only ever
                        describe one of them. The box docks itself inside the
                        pane (corners and edge midpoints), so it takes the whole
@@ -741,7 +758,7 @@
                        overlay in the DOM and at the same z, so it draws over
                        the ring rather than under it. Panes too narrow to hold
                        it (it would cover the terminal it describes) get none. -->
-                  {#if !mobile && settings.state.experimentInfoBox && rect.w >= 420 && InfoBoxView.current}
+                  {#if !mobile && rect.w >= 420 && InfoBoxView.current}
                     {@const InfoBoxComp = InfoBoxView.current}
                     <InfoBoxComp {thread} {visible} {focused} />
                   {/if}
@@ -777,7 +794,7 @@
               {@const HomeComp = HomeView.current}
               <HomeComp />
             {:else}
-              <div class="flex h-full items-center justify-center text-xs text-muted-foreground/70">
+              <div class="flex h-full items-center justify-center text-sm text-muted-2">
                 {t("common.loading")}
               </div>
             {/if}
@@ -790,7 +807,7 @@
               {@const PluginsComp = PluginsView.current}
               <PluginsComp />
             {:else}
-              <div class="flex h-full items-center justify-center text-xs text-muted-foreground/70">
+              <div class="flex h-full items-center justify-center text-sm text-muted-2">
                 {t("common.loading")}
               </div>
             {/if}
@@ -803,7 +820,7 @@
               {@const EditorComp = EditorView.current}
               <EditorComp />
             {:else}
-              <div class="flex h-full items-center justify-center text-xs text-muted-foreground/70">
+              <div class="flex h-full items-center justify-center text-sm text-muted-2">
                 {t("common.loading")}
               </div>
             {/if}
@@ -841,12 +858,6 @@
         {/if}
       {/if}
     </main>
-
-    <!-- Outside <main>, beside it: the column describes the project rather than
-         whatever view is up. -->
-    {#if !mobile && app.ready && !homeActive && !settings.state.experimentInfoBox && settings.rightPanelFor(app.currentProjectId)}
-      <SidePanel />
-    {/if}
   </div>
   {/if}
   {/key}
@@ -868,7 +879,7 @@
   <ConnectionBanner />
 
   <!-- Over the whole window, login screen and setup wizard included: the whip
-       belongs to the app rather than to a view. Cosmetic in full — it sends
+       belongs to the app rather than to a view. Cosmetic in full: it sends
        nothing to any terminal. -->
   {#if settings.state.experimentWhip && WhipView.current}
     {@const WhipComp = WhipView.current}
@@ -898,7 +909,7 @@
     border-radius: 18px;
   }
   /* A glow hugging the edges rather than a line drawn on them. The 1.5px of
-     solid colour was a border the app did not have, and it read as chrome —
+     solid colour was a border the app did not have, and it read as chrome:
      something to look at instead of something to notice. A hairline at half
      strength with the light falling inward says the same thing at the edge of
      vision and disappears the moment you are reading a terminal. */

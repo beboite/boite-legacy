@@ -1,6 +1,15 @@
 [workspace]
-members = ["crates/boite-agent-api", "crates/boite-core", "crates/boite-identity", "crates/boite-mcp", "crates/boite-server", "src-tauri"]
+members = ["crates/boite-agent-api", "crates/boite-core", "crates/boite-identity", "crates/boite-mcp", "crates/boite-pilot", "crates/boite-server", "src-tauri"]
+exclude = ["vendor/portable-pty"]
 resolver = "2"
+
+# portable-pty 0.9.0 with one change, in `src/win/psuedocon.rs`: the
+# pseudoconsole is created without PSEUDOCONSOLE_INHERIT_CURSOR. The upstream
+# flag makes every Windows PTY wait on the terminal before its child runs, and
+# a console closed during that wait never exits. Drop this patch only for an
+# upstream release that lets the caller choose the flags.
+[patch.crates-io]
+portable-pty = { path = "vendor/portable-pty" }
 
 [profile.release]
 # Fat LTO + a single codegen unit costs link time but is worth it here: the PTY

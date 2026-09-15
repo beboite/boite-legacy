@@ -9,10 +9,13 @@
   import { settings } from "$lib/features/settings/store.svelte";
   import {
     launchBlankTerminal,
+    launchChat,
     launchShell,
     launchShortcut,
     launchTargetProjectId,
   } from "$lib/features/thread/api";
+  import { chatChoice, pilotCatalog } from "$lib/features/pilot/catalog.svelte";
+  import MessageSquare from "@lucide/svelte/icons/message-square";
   import { launchTargetMenu } from "./launchMenu";
   import ShortcutIcon from "$lib/shared/icons/ShortcutIcon.svelte";
   import ContextMenu from "$lib/shared/components/ContextMenu.svelte";
@@ -30,16 +33,17 @@
   import TerminalIcon from "@lucide/svelte/icons/terminal";
   import Sparkles from "@lucide/svelte/icons/sparkles";
 
-  // A plain click on no project already lands in Scratch; the menu — and the
-  // shift-click behind it — is how you get there without giving up the project
+  // A plain click on no project already lands in Scratch; the menu, and the
+  // shift-click behind it, is how you get there without giving up the project
   // you are on. Except when the launcher was opened from a project's own row:
   // that project IS the answer, and asking again would be asking twice.
-  async function launch(shortcutId: string, forceScratch: boolean) {
+  async function launch(shortcutId: string, forceScratch: boolean, chat = false) {
     const shortcut = settings.state.shortcuts.find((s) => s.id === shortcutId);
     if (!shortcut) return;
     const target = projectId ?? (await launchTargetProjectId(forceScratch));
     if (!target) return;
-    await launchShortcut(shortcut, target);
+    if (chat) await launchChat(shortcut, target);
+    else await launchShortcut(shortcut, target);
     onLaunched?.();
   }
 
@@ -61,7 +65,7 @@
    *
    * It used to be a 40px strip across the top of the main area, permanently
    * offering something you do a handful of times a session, in the space the
-   * agent's own output wants — and it owned the slot the editor needs for its
+   * agent's own output wants, and it owned the slot the editor needs for its
    * tabs. It is a popover off a project's `+` now.
    *
    * `compact` is that popover, and it is one menu that walks between panes, not a
@@ -138,6 +142,10 @@
     // The fastpick row hides itself on a machine with no fastpick, and only the
     // probe knows. In the bar, `FastpickPicker` asks; here nothing else would.
     if (compact && settings.state.fastpickEnabled) void fastpick.ensure();
+    // Which presets have a protocol. Asked only when the experiment is armed:
+    // a boite with the switch off must not pay an IPC hop for a button it will
+    // never draw.
+    if (settings.state.experimentPilot) void pilotCatalog.ensure();
   });
 
   function tooltip(label: string, command: string): string {
@@ -150,7 +158,7 @@
   }
 
   const rowClass =
-    "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-foreground/80 transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40";
+    "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-foreground transition hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:focus-ring-inset disabled:cursor-not-allowed disabled:opacity-40";
 </script>
 
 <!-- Compact carries no surface of its own: it is the contents of a popover, and
@@ -180,21 +188,21 @@
       {#if onBoite}
         <!-- The list changed machine when the project did, and nothing else on
              screen says which one these shells belong to. -->
-        <span class="ml-auto shrink-0 text-2xs text-muted-foreground/70">
+        <span class="ml-auto shrink-0 text-xs text-muted-2">
           {t("sidebar.onBoite", { name: workspace.info.name || "boite" })}
         </span>
       {/if}
     </div>
     <div class="flex min-h-0 flex-col scroll-pane overflow-y-auto p-1.5">
       {#if shells.length === 0}
-        <div class="px-2 py-1.5 text-xs text-muted-foreground">
+        <div class="px-2 py-1.5 text-sm text-muted-foreground">
           {t("shell.noneDetected")}
         </div>
       {/if}
       {#each shells as shell (shell.id)}
         <button type="button" class={rowClass} onclick={(e) => void pickShell(shell, e.shiftKey)}>
           <span class="min-w-0 truncate font-medium">{shell.label}</span>
-          <span class="ml-auto shrink-0 text-2xs text-muted-foreground/70">
+          <span class="ml-auto shrink-0 text-xs text-muted-2">
             {shell.id}
           </span>
         </button>
@@ -218,31 +226,51 @@
     >
       {#each settings.state.shortcuts as shortcut (shortcut.id)}
         {@const iconKey = resolveIconKey(shortcut.iconKey, shortcut.label, shortcut.command)}
-        <button
-          type="button"
-          class={compact
-            ? rowClass
-            : "press group flex shrink-0 items-center gap-1.5 rounded-md border border-transparent bg-[var(--color-surface-2)] px-2.5 py-1 text-xs text-foreground/80 hover:border-border hover:bg-[var(--color-surface-3)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"}
-          disabled={!shortcut.command.trim()}
-          onclick={(e) => void launch(shortcut.id, e.shiftKey)}
-          oncontextmenu={(e) => {
-            e.preventDefault();
-            openMenu(shortcut.id, e.clientX, e.clientY);
-          }}
-          use:longPress={{ onLongPress: (x, y) => openMenu(shortcut.id, x, y) }}
-          use:tip={tooltip(shortcut.label, shortcut.command)}
-        >
-          <ShortcutIcon {iconKey} size={15} color={shortcut.iconColor ?? null} />
-          <!-- Truncated rather than wrapped: the popover is as wide as the project
-               card, and a two-line row would break the rhythm the list reads by. -->
-          <span class="min-w-0 truncate font-medium">{shortcut.label}</span>
-        </button>
+        {@const choice = chatChoice(shortcut.command)}
+        <!-- Terminal or Chat on the same row. Not two rows: the shortcut is one
+             thing to launch and the runtime is how, so the second button is a
+             modifier on the first rather than a second entry in a list the user
+             already reads top to bottom. Greyed with the reason where the agent
+             has no protocol yet, never hidden. -->
+        <div class={compact ? "flex items-stretch gap-0.5" : "flex shrink-0 items-stretch"}>
+          <button
+            type="button"
+            class={compact
+              ? `${rowClass} flex-1`
+              : "press group flex shrink-0 items-center gap-1.5 rounded-md border border-transparent bg-[var(--color-surface-2)] px-2.5 py-1 text-sm text-foreground hover:border-edge hover:bg-[var(--color-surface-3)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"}
+            disabled={!shortcut.command.trim()}
+            onclick={(e) => void launch(shortcut.id, e.shiftKey)}
+            oncontextmenu={(e) => {
+              e.preventDefault();
+              openMenu(shortcut.id, e.clientX, e.clientY);
+            }}
+            use:longPress={{ onLongPress: (x, y) => openMenu(shortcut.id, x, y) }}
+            use:tip={tooltip(shortcut.label, shortcut.command)}
+          >
+            <ShortcutIcon {iconKey} size={15} color={shortcut.iconColor ?? null} />
+            <!-- Truncated rather than wrapped: the popover is as wide as the project
+                 card, and a two-line row would break the rhythm the list reads by. -->
+            <span class="min-w-0 truncate font-medium">{shortcut.label}</span>
+          </button>
+          {#if choice.offered}
+            <button
+              type="button"
+              class="flex shrink-0 items-center rounded-md px-1.5 text-muted-2 transition hover:bg-[var(--color-surface-3)] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={!choice.enabled || !shortcut.command.trim()}
+              onclick={(e) => void launch(shortcut.id, e.shiftKey, true)}
+              aria-label={t("pilot.chat")}
+              use:tip={choice.enabled ? t("pilot.chat") : t("pilot.noDriver")}
+            >
+              <MessageSquare class="size-3.5" />
+            </button>
+          {/if}
+        </div>
       {/each}
 
       {#if settings.state.shortcuts.length === 0}
         <button
           type="button"
-          class="shrink-0 text-xs text-muted-foreground transition hover:text-foreground"
+          class="shrink-0 text-sm text-muted-foreground transition hover:text-foreground"
           onclick={openSettings}
         >
           {t("shortcuts.addShortcuts")}
@@ -275,7 +303,7 @@
         <div class="group flex items-stretch rounded-md transition hover:bg-accent">
           <button
             type="button"
-            class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted-foreground transition group-hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
+            class="flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-muted-foreground transition group-hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground focus-visible:outline-none"
             onclick={(e) => void launchDefaultShell(e.shiftKey)}
             use:tip={defaultShell
               ? t("shell.launchNamed", { name: defaultShell.label })
@@ -286,7 +314,7 @@
           </button>
           <button
             type="button"
-            class="flex shrink-0 items-center rounded-r-md border-l border-border/60 px-1.5 text-muted-foreground/70 transition hover:bg-[var(--color-surface-3)] hover:text-foreground focus-visible:bg-[var(--color-surface-3)] focus-visible:text-foreground focus-visible:outline-none group-hover:text-foreground/70 disabled:cursor-not-allowed disabled:opacity-40"
+            class="flex shrink-0 items-center rounded-r-md border-l border-border/60 px-1.5 text-muted-2 transition hover:bg-[var(--color-surface-3)] hover:text-foreground focus-visible:bg-[var(--color-surface-3)] focus-visible:text-foreground focus-visible:outline-none group-hover:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-40"
             disabled={shells.length === 0}
             onclick={() => (pane = "shell")}
             aria-label={t("shell.pick")}

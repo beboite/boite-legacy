@@ -6,18 +6,44 @@ opens a **draft** release: clients see nothing until you publish it.
 
 ## Cutting a release
 
-Bump the version in the eight places that carry it:
+Bump the version in the nine places that carry it:
 
 - `package.json`
 - `src-tauri/tauri.conf.json`
 - `src-tauri/Cargo.toml`
 - every `crates/*/Cargo.toml`: `boite-core`, `boite-identity`,
-  `boite-agent-api`, `boite-server`, `boite-mcp`
+  `boite-agent-api`, `boite-server`, `boite-mcp`, `boite-pilot`
 
 Commit, then tag `vX.Y.Z` and push the tag. The `verify` job checks all of them
 against each other and against the tag before a single runner starts building.
 It globs the Cargo manifests rather than listing them, so a crate added to the
 workspace is covered the day it lands.
+
+## The product is "Boite Legacy" since 1.4.0
+
+1.4.0 renamed `productName` from `Boite` to `Boite Legacy` and the identifier
+from `com.boite.desktop` to `com.boite.legacy`, so that the next Boite, rebuilt
+at `beboite/boite`, can take both names. `mainBinaryName` stays `boite`: the
+executable, and with it the path every shortcut and process list already knows,
+does not move.
+
+Two things carry an existing install across, and both have to survive any
+later change here:
+
+- `src-tauri/src/app_data.rs` moves the data directories of the previous
+  identifiers into the current one on first start, before the database opens.
+- `src-tauri/windows/hooks.nsh` is wired through `bundle.windows.nsis.installerHooks`.
+  Tauri's NSIS installer keys the uninstall entry, the install directory and
+  the shortcuts on the product name, and the updater runs it with `/UPDATE`,
+  which uninstalls nothing and creates no shortcuts. Without the hooks a 1.x
+  "Boite" would stay installed beside "Boite Legacy", with the old shortcut
+  still launching it. The pre-install hook runs the 1.x uninstaller (passive,
+  app data kept), the post-install hook creates the shortcuts the update
+  skipped.
+
+The hook only removes a "Boite" whose `DisplayVersion` starts with `1.`. The
+next Boite must therefore not ship a 1.x version on Windows, or a later legacy
+update would uninstall it.
 
 ## The test suite, once
 
@@ -55,9 +81,11 @@ The `android` job builds `mobile/` after every platform has uploaded and puts
 | `ANDROID_KEYSTORE_PASSWORD` | its password |
 | `ANDROID_KEY_PASSWORD` | the key's own password, only when it differs |
 
-The alias is read from `mobile/twa-manifest.json`. With no keystore secret the
-job uploads `boite-X.Y.Z-unsigned.apk` and says so as a warning, so a release
-is not held back for it.
+The alias is read from `mobile/twa-manifest.json`. Both `ANDROID_KEYSTORE` and
+`ANDROID_KEYSTORE_PASSWORD` are required. Missing either fails the android job
+rather than attaching `boite-X.Y.Z-unsigned.apk`: v1.3.4 shipped that file and
+PackageInstaller refused it as an invalid package. Desktop assets already on
+the release stay, the android job being a sibling of `prune`.
 
 A release that leaves `mobile/` untouched does not rebuild: the job takes the
 signed APK from the newest published release that carries one, under its

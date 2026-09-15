@@ -2,16 +2,23 @@
   import { onMount, untrack } from "svelte";
   import { tip } from "$lib/shared/actions/tooltip";
   import { app } from "$lib/app/store.svelte";
+  import { backendFor } from "$lib/backend";
+  import type { FolderState } from "$lib/backend/types";
   import { gitStore, gitScope } from "$lib/features/git/store.svelte";
-  import { todos } from "$lib/features/todo/store.svelte";
   import { notifications } from "$lib/features/notifications/store.svelte";
+  import { logger } from "$lib/shared/services/logger.svelte";
+  import { todos } from "$lib/features/todo/store.svelte";
   import { confirmDialog } from "$lib/shared/components/confirm.svelte";
   import TodoList from "$lib/features/todo/TodoList.svelte";
+  import CardError from "./CardError.svelte";
   import DashboardCard from "./DashboardCard.svelte";
+  import ProjectHealthBanner from "./ProjectHealthBanner.svelte";
+  import ProjectRepoSettings from "./ProjectRepoSettings.svelte";
   import ProjectWorktrees from "./ProjectWorktrees.svelte";
   import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
   import ProjectUsage from "./ProjectUsage.svelte";
   import ProjectStats from "./ProjectStats.svelte";
+  import { gitFailure, gitFailureKey, projectHealth, repoCardsVisible } from "./health";
   import ThreadTurns from "$lib/features/thread/ThreadTurns.svelte";
   import ShortcutIcon from "$lib/shared/icons/ShortcutIcon.svelte";
   import { threadIconColor } from "$lib/features/fastpick/threadAccent";
@@ -24,7 +31,6 @@
   import GitBranch from "@lucide/svelte/icons/git-branch";
   import ListTodo from "@lucide/svelte/icons/list-todo";
   import Eraser from "@lucide/svelte/icons/eraser";
-  import Plus from "@lucide/svelte/icons/plus";
   import TerminalIcon from "@lucide/svelte/icons/terminal";
   import ArrowUp from "@lucide/svelte/icons/arrow-up";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
@@ -48,6 +54,25 @@
    */
   type Props = { project: Project; onOpenThread: (threadId: string) => void };
   let { project, onOpenThread }: Props = $props();
+
+  /**
+   * How wide the page actually is, rather than how wide the window is.
+   *
+   * This dashboard is drawn in two places: the main area, and a pane. At 300px
+   * (the pane's minimum) the viewport breakpoints it used to carry were still
+   * reading "large", so three columns of 90px were laid out and every card
+   * became one word per line with the labels drawn over each other. The
+   * measurement is the page's own box, so the same component answers correctly
+   * in both.
+   *
+   * Unmeasured is three columns on purpose: it is what the main area resolves
+   * to a frame later, and starting narrow would reflow the common case.
+   */
+  let width = $state(0);
+  const columns = $derived(width === 0 || width >= 900 ? 3 : width >= 560 ? 2 : 1);
+  // A year of squares needs about a pixel per day plus the gutters. Under this
+  // it is a smear, so the tokens card keeps its figures and drops the picture.
+  const tinyWidth = $derived(width > 0 && width < 400);
 
   // Minus what the project put away. The sidebar's own drawer is the one place
   // a settled thread shows up, so a card here that still counted them would be
@@ -111,29 +136,68 @@
   // it, and forcing a reload on every visit walks the same commits this card
   // is about to draw. Untracked so filling the log does not fire the effect
   // again.
+  let lastGitError: string | null = null;
   $effect(() => {
     const registered = gitStore.ensure(project.id, project.gitRoot ?? project.cwd);
     const reloadLog = untrack(() => (gitStore.get(registered)?.log.length ?? 0) === 0);
-    void gitStore.refresh(registered, { reloadLog }).catch(() => {});
+    void gitStore.refresh(registered, { reloadLog, notifyErrors: true }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Silent for the two failures the banner is already about. A toast
+      // saying "Git could not read this folder" over a banner saying the
+      // folder is gone is the same sentence twice, and the toast is the one
+      // with no action on it.
+      const kind = gitFailure(msg);
+      if (kind === "pathMissing" || kind === "notARepo") {
+        lastGitError = msg;
+        return;
+      }
+      if (lastGitError !== msg) {
+        lastGitError = msg;
+        notifications.error(t(gitFailureKey(kind)), undefined, msg);
+      }
+    });
   });
 
-  // The dashboard is where a task occurs to you, so it takes one here rather
-  // than sending you to the panel. Adding keeps the focus: a list is usually
-  // written as a burst of lines, not one. The input is emptied on submit so
-  // the next line can be typed without waiting; a failure has to put it back,
-  // otherwise the only copy of what was typed is gone and the list never grew.
-  let todoDraft = $state("");
-  async function addTodo() {
-    const title = todoDraft.trim();
-    if (!title) return;
-    todoDraft = "";
-    try {
-      await todos.add(project.id, title);
-    } catch {
-      todoDraft = title;
-      notifications.error(t("todo.saveFailed"));
-    }
-  }
+  /**
+   * Is the folder still there, asked once per project rather than inferred
+   * from whichever card failed first.
+   *
+   * `project.folderState` is on the bus already (`Files::FolderState`) and both
+   * hosts route it, so nothing new was added to Rust for this. It answers
+   * `missing` for a path that is not there and never throws for one, which is
+   * the whole question; a refusal (a path outside a server's workspace root)
+   * leaves the answer null and the page reads as ordinary.
+   */
+  let folder = $state<FolderState | null>(null);
+  $effect(() => {
+    const cwd = project.cwd;
+    const origin = project.origin;
+    folder = null;
+    let live = true;
+    void backendFor(origin)
+      .project.folderState(cwd)
+      .then((state) => {
+        if (live) folder = state;
+      })
+      .catch((err) => {
+        logger.warn("project", `folder probe refused ${cwd}`, String(err));
+      });
+    return () => {
+      live = false;
+    };
+  });
+
+  const health = $derived(
+    projectHealth({
+      folder,
+      gitLoaded: !!git?.loaded,
+      gitIsRepo: !!git?.isRepo,
+      gitError: git?.error ?? null,
+    }),
+  );
+  // Git, Tours and Worktrees each read the repository, so in the two banner
+  // states they have nothing to say that the banner has not said better.
+  const repoCards = $derived(repoCardsVisible(health));
 
   // Same door as a single remove: the rows do not come back, and the eraser
   // used to skip the question the rest of this surface asks.
@@ -174,9 +238,27 @@
   }
 </script>
 
-<div class="grid gap-3 lg:grid-cols-3">
+<div class="flex flex-col gap-3" bind:clientWidth={width}>
+  <ProjectHealthBanner {project} {health} />
+
+  <!-- Columns of stacked cards, not one grid of mixed heights. A CSS grid row
+       is as tall as its tallest cell, so a short card next to a commit list
+       left a hole the next row could not fill. Each column is a flex stack,
+       so Threads sits on Turns and Todos on the project settings, and the
+       ragged edge is at the bottom of the group. -->
+  <div
+    class={[
+      "grid items-start gap-3",
+      columns === 3 && "grid-cols-3",
+      columns === 2 && "grid-cols-2",
+    ]}
+  >
+    <div
+      class={["flex min-w-0 flex-col gap-3", columns === 3 && !repoCards && "col-span-2"]}
+    >
   <!-- Terminals. The list is the whole card: starting one is the shortcut bar's
-       job, one row up. -->
+       job, one row up. It leads the page: it is what the user came for, and it
+       used to be the smallest card under the one they look at once a month. -->
   <DashboardCard
     title={t("project.threads")}
     badge={threads.length || null}
@@ -201,11 +283,12 @@
     {/snippet}
     {#snippet actions()}
       <!-- The per-project override, three states: absent inherits the global
-           answer. Only drawn while that experiment is armed, so switching it
-           off restores one global orchestrator without erasing the choices. -->
-      {#if settings.state.experimentOrchestrator && settings.state.experimentOrchestratorPerProject}
+           answer. Only drawn while the workspace experiment is armed, and
+           switching that off restores one global orchestrator without erasing
+           the choices. -->
+      {#if settings.state.experimentWorkspace}
         <select
-          class="rounded-md border border-border bg-[var(--color-surface-2)] px-1.5 py-0.5 text-xs text-muted-foreground outline-none focus:border-foreground/30"
+          class="min-w-0 truncate rounded-md border border-edge bg-[var(--color-surface-2)] px-1.5 py-0.5 text-sm text-muted-foreground focus:outline-none focus-visible:focus-ring focus:border-foreground/30"
           aria-label={t("project.orchestrator")}
           value={settings.state.orchestratorByProject[project.id] ?? ""}
           onchange={(e) =>
@@ -247,12 +330,12 @@
               </span>
               <span class="min-w-0 flex-1">
                 <span
-                  class="block truncate text-base text-foreground/80"
+                  class="block truncate text-base text-foreground"
                   use:tip={thread.title ?? thread.label}
                 >
                   {thread.title ?? thread.label}
                 </span>
-                <span class="block truncate text-xs text-muted-foreground/80">
+                <span class="block truncate text-xs text-muted-2">
                   {activity(thread)}
                 </span>
               </span>
@@ -263,16 +346,92 @@
     {/if}
   </DashboardCard>
 
+      {#if columns === 1}
+        {#if repoCards}{@render gitCard()}{/if}
+        {@render todosCard()}
+        {#if repoCards}
+          <ThreadTurns {project} />
+          <ProjectWorktrees {project} />
+        {/if}
+        <ProjectRepoSettings {project} />
+      {:else if columns === 3 && repoCards}
+        <ThreadTurns {project} />
+      {:else if repoCards}
+        {@render gitCard()}
+        <ThreadTurns {project} />
+        <ProjectWorktrees {project} />
+      {/if}
+    </div>
+
+    {#if columns === 3 && repoCards}
+      <div class="flex min-w-0 flex-col gap-3">
+        {@render gitCard()}
+        <ProjectWorktrees {project} />
+      </div>
+    {/if}
+
+    {#if columns >= 2}
+      <div class="flex min-w-0 flex-col gap-3">
+        {@render todosCard()}
+        <ProjectRepoSettings {project} />
+      </div>
+    {/if}
+  </div>
+
+  <!-- Two columns, with the figures in the third. They were split so the
+       calendar could take the width a year of squares needs; placing Stats
+       after Usage is what keeps that pairing on one row instead of leaving
+       an empty cell beside each of them. -->
+  <div
+    class={[
+      "grid items-start gap-3",
+      columns === 3 && "grid-cols-3",
+      columns === 2 && "grid-cols-2",
+    ]}
+  >
+    <ProjectUsage
+      {project}
+      hideCalendar={tinyWidth}
+      class={columns >= 2 ? "col-span-2" : ""}
+    />
+
+    <ProjectStats
+      {project}
+      threadCount={threads.length}
+      openTodos={openTodos.length}
+      commits={git?.commitCount ?? 0}
+      gitLoaded={!!git?.loaded}
+      gitIsRepo={!!git?.isRepo}
+    />
+
+    <ProjectMcpSettings {project} class={columns === 3 ? "col-span-full" : ""} />
+
+    <!-- The paths, as a line rather than a card. They are the one thing here
+         that never changes, and a card's worth of chrome around two static
+         strings was room the rest of the page wanted. -->
+    <p class="col-span-full truncate px-1 text-sm text-muted-2" use:tip={pathTip}>
+      {project.cwd}{#if project.gitRoot && project.gitRoot !== project.cwd}
+        · {t("project.repoAt", { path: project.gitRoot })}
+      {/if}
+    </p>
+  </div>
+</div>
+
+{#snippet gitCard()}
   <!-- Git. A summary, not a panel: branch, how far from upstream, what is
-       uncommitted, and the last few commits with when they landed. -->
+       uncommitted, and the last few commits with when they landed. Absent
+       entirely while the banner is up: a folder that is gone has no branch,
+       and the card used to answer that with an OS error in red. -->
   <DashboardCard title={t("project.git")}>
     {#snippet icon()}<GitBranch class="size-3.5" />{/snippet}
     {#if !git?.loaded}
       <p class="text-sm text-muted-foreground">{t("common.loading")}</p>
     {:else if git.error}
       <!-- The store keeps the last good lists when a refresh fails, so without
-           this branch a moved folder or a missing git still looked clean. -->
-      <p class="text-sm text-[var(--color-danger)]">{git.error}</p>
+           this branch a moved folder or a missing git still looked clean. The
+           two failures with a banner never reach here; what does is the rest,
+           and the rest is not copy. -->
+      <CardError error={git.error} />
     {:else if !git.isRepo}
       <p class="text-sm text-muted-foreground">{t("project.notARepo")}</p>
     {:else}
@@ -307,12 +466,12 @@
         <ul class="mt-2.5 flex flex-col gap-1 border-t border-border pt-2">
           {#each git.log.slice(0, 5) as commit (commit.sha)}
             <li class="flex items-baseline gap-2 text-sm" use:tip={commit.summary}>
-              <span class="min-w-0 flex-1 truncate text-foreground/80">
+              <span class="min-w-0 flex-1 truncate text-foreground">
                 {commit.summary}
               </span>
               <!-- The one thing the sha never said. A dashboard is read for
                    "when did anything last happen here". -->
-              <span class="shrink-0 text-xs text-muted-foreground/70">
+              <span class="shrink-0 text-xs text-muted-2">
                 {formatAgo(relativeClock.now - commit.time * 1000)}
               </span>
             </li>
@@ -321,14 +480,17 @@
       {/if}
     {/if}
   </DashboardCard>
+{/snippet}
 
-  <!-- Todos. The list itself, not a summary of it: this card used to be six
-       truncated titles with an input under them, which is the right shape only
-       while the docked column is one click away. The info-box experiment takes
-       that column away, and then this is the entire todo surface — so it draws
-       the same cards the panel does, with the same tick, confirm, edit, drag
-       and delete on every one. Claimed is still called out separately: it means
-       an agent says it is done and only the user can confirm that. -->
+{#snippet todosCard()}
+  <!-- Todos. Third of the first row, next to terminals and git, because those
+       three are what is happening. The list itself, not a summary of it: this
+       card used to be six truncated titles with an input under them, which is
+       the right shape only while a docked column is one click away. There is
+       no column any more, so this is a full todo surface, the same component
+       the pane draws, with the same tick, confirm, edit, drag and delete on
+       every card. Claimed is still called out separately: it means an agent
+       says it is done and only the user can confirm that. -->
   <DashboardCard title={t("project.todos")} badge={openTodos.length || null} flush>
     {#snippet icon()}<ListTodo class="size-3.5" />{/snippet}
     {#snippet lead()}
@@ -353,70 +515,7 @@
       </button>
     {/snippet}
     <div class="flex h-full min-h-0 flex-col">
-      <!-- Capped rather than free: the card sits in a grid row with two others,
-           and a project with forty todos would otherwise decide how tall every
-           card beside it is. -->
-      <TodoList
-        projectId={project.id}
-        class="max-h-80 min-h-0 flex-1 scroll-pane overflow-y-auto border-t border-border"
-      />
-      <!-- Creation lives on the card either way: an empty list is exactly where
-           the first todo gets written. -->
-      <form
-        class="flex shrink-0 items-center gap-1.5 border-t border-border px-3.5 py-2"
-        onsubmit={(e) => {
-          e.preventDefault();
-          void addTodo();
-        }}
-      >
-        <Plus class="size-3.5 shrink-0 text-muted-foreground/70" />
-        <input
-          type="text"
-          bind:value={todoDraft}
-          placeholder={t("project.addTodo")}
-          aria-label={t("project.addTodo")}
-          class="min-w-0 flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
-        />
-      </form>
+      <TodoList projectId={project.id} compact />
     </div>
   </DashboardCard>
-
-  <!-- What the agent did, turn by turn, and the way back out of one. Beside the
-       git card on purpose: they read the same repository and answer the two
-       halves of "what changed here". -->
-  <ThreadTurns {project} />
-
-  <!-- Two cards' worth of grid, and each component places itself: the token
-       calendar wants the width, the figures beside it do not. -->
-  <ProjectUsage {project} />
-
-  <ProjectStats
-    {project}
-    threadCount={threads.length}
-    openTodos={openTodos.length}
-    commits={git?.commitCount ?? 0}
-    gitLoaded={!!git?.loaded}
-    gitIsRepo={!!git?.isRepo}
-  />
-
-  <!-- Where the agents actually are, and what this project does with them.
-       Two cards from one component, because the switch decides what the list
-       below it will hold. The MCP access rows are inside the first of them:
-       they were a full-width card of their own holding two lines of text, and
-       three columns of nothing under it. -->
-  <ProjectWorktrees {project} />
-
-  <ProjectMcpSettings {project} />
-
-  <!-- The paths, as a line rather than a card. They are the one thing here
-       that never changes, and a card's worth of chrome around two static
-       strings was room the rest of the page wanted. -->
-  <p
-    class="truncate px-1 text-xs text-muted-foreground/70 lg:col-span-3"
-    use:tip={pathTip}
-  >
-    {project.cwd}{#if project.gitRoot && project.gitRoot !== project.cwd}
-      · {t("project.repoAt", { path: project.gitRoot })}
-    {/if}
-  </p>
-</div>
+{/snippet}

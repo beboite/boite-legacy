@@ -3,15 +3,17 @@
 
 <p align="center">Desktop on <a href="#install">Windows, Linux and macOS</a>, a phone via <a href="#remote-and-mobile">PWA</a>. It runs the CLIs you already have, on the subscriptions you already pay for: no account, nothing in between.</p>
 
+<p align="center">This repository is Boite Legacy. 1.4.0 is the last feature release of this code base: installs keep updating from <a href="https://github.com/beboite/boite-legacy/releases">beboite/boite-legacy</a> and still get fixes, while the next Boite is rebuilt at <a href="https://github.com/beboite/boite">beboite/boite</a>.</p>
+
 <p align="center">
   <img src="./static/icons/icon-512.png" alt="Boite logo" width="140" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/beboite/boite/releases"><img src="https://img.shields.io/github/v/release/beboite/boite?display_name=tag" alt="Release" /></a>
-  <a href="./LICENSE"><img src="https://img.shields.io/github/license/beboite/boite" alt="License" /></a>
-  <a href="https://github.com/beboite/boite/stargazers"><img src="https://img.shields.io/github/stars/beboite/boite" alt="Stars" /></a>
-  <a href="https://github.com/beboite/boite/issues"><img src="https://img.shields.io/github/issues/beboite/boite" alt="Issues" /></a>
+  <a href="https://github.com/beboite/boite-legacy/releases"><img src="https://img.shields.io/github/v/release/beboite/boite-legacy?display_name=tag" alt="Release" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/beboite/boite-legacy" alt="License" /></a>
+  <a href="https://github.com/beboite/boite-legacy/stargazers"><img src="https://img.shields.io/github/stars/beboite/boite-legacy" alt="Stars" /></a>
+  <a href="https://github.com/beboite/boite-legacy/issues"><img src="https://img.shields.io/github/issues/beboite/boite-legacy" alt="Issues" /></a>
   <a href="#platform-support"><img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-0078D6" alt="Platform" /></a>
   <a href="https://tauri.app/"><img src="https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri" alt="Tauri" /></a>
   <a href="https://svelte.dev/"><img src="https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte" alt="Svelte" /></a>
@@ -56,6 +58,18 @@ argued in [docs/design-decisions.md](docs/design-decisions.md).
 
 A worktree per thread, Scratch, fastpick endpoints, remote workspaces and the
 phone layout each get their own section below.
+
+**Chat threads, an experiment.** A thread is normally a terminal, and Boite
+reads it the way you would: what is on the screen, a session file on disk, a
+dot that expires on a clock. A chat thread is the same row with the same
+worktree and the same sidebar entry, driven over the agent's own protocol
+instead: the status is what the agent said it was, a tool approval is a card in
+the dock or on your phone rather than a question buried in a TUI, and the model
+switches mid-conversation. Claude first, since it is the one whose wire is
+already public; the others follow the same trait. Turn it on in Settings,
+Experiments, "Chat threads", and the launcher grows a Chat button next to
+Terminal, greyed on a preset no driver covers yet. The design is
+[docs/pilot.md](docs/pilot.md).
 
 ## Supported agents
 
@@ -212,7 +226,7 @@ back to the DOM renderer if xterm's WebGL one cannot initialize.
 
 ## Install
 
-From [Releases](https://github.com/beboite/boite/releases):
+From [Releases](https://github.com/beboite/boite-legacy/releases):
 
 - **Windows**: NSIS installer (per-user, no admin prompt)
 - **Linux**: deb, rpm or AppImage
@@ -238,9 +252,17 @@ Projects, threads and transcripts stay on disk next to the app config:
 
 | OS      | Path                                              |
 | ------- | ------------------------------------------------- |
-| Windows | `%APPDATA%\com.boite.desktop\boite.db`            |
-| Linux   | `~/.local/share/com.boite.desktop/boite.db`       |
-| macOS   | `~/Library/Application Support/com.boite.desktop/` |
+| Windows | `%APPDATA%\com.boite.legacy\boite.db`             |
+| Linux   | `~/.local/share/com.boite.legacy/boite.db`        |
+| macOS   | `~/Library/Application Support/com.boite.legacy/`  |
+
+1.4.0 renamed the bundle identifier, so an existing install moves itself on
+first start: from `com.boite.desktop`, and from `dev.boite.app` for an install
+older than 1.0.1. The webview's own storage, which holds the pane layouts and
+the device settings, moves with it. Every move is a rename, file by file, and
+nothing already sitting at the new name is overwritten. Nothing is deleted from
+a directory it could not empty either, so whatever stays behind is still where
+it was and can be recovered by hand.
 
 ## Keyboard
 

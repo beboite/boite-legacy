@@ -33,7 +33,7 @@ use vte::{Params, Parser, Perform};
 /// A desktop app started from Finder or the Dock gets launchd's environment,
 /// which carries no TERM at all, and nothing downstream supplies one: neither
 /// this crate nor portable-pty. A shell whose terminfo is unknown loses line
-/// editing — zsh answers a backspace with a bare space instead of the
+/// editing: zsh answers a backspace with a bare space instead of the
 /// backspace/space/backspace dance, so the deleted character stays on screen
 /// while the buffer behind it is correct. Agent CLIs escape it by driving the
 /// terminal in raw mode, which is why plain shells were the only ones bitten.
@@ -42,7 +42,7 @@ use vte::{Params, Parser, Perform};
 /// nothing about the terminal we actually render into, which is xterm.js.
 /// `TERM_PROGRAM` is how a process asks who is rendering it, the way it does for iTerm2 or
 /// VS Code. Boite answers, so a tool that has something to say to its terminal can check
-/// first and stay silent everywhere else — the OSC promotion sequence is the one that
+/// first and stay silent everywhere else, the OSC promotion sequence is the one that
 /// matters today.
 pub fn terminal_env_defaults() -> [(&'static str, &'static str); 3] {
     [
@@ -86,6 +86,20 @@ pub struct PtySpawnArgs {
     /// a remote boite that machine is the server.
     #[serde(default)]
     pub wrap: Option<WrapSpec>,
+}
+
+/// Which thread a spawn belongs to, for the log.
+///
+/// Read out of the environment rather than taken as an argument: every host
+/// already stamps `BOITE_THREAD_ID` into a thread's PTY, and adding a field
+/// would mean every caller of `spawn` filling in something the environment
+/// already carries. Empty for a PTY nobody claimed, which is honest.
+fn thread_of(spec: &PtySpawnArgs) -> String {
+    spec.env
+        .as_ref()
+        .and_then(|env| env.get("BOITE_THREAD_ID"))
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -166,75 +180,14 @@ fn parse_probe_output(text: &str, already_set: impl Fn(&str) -> bool) -> ShellPr
     ShellProbe { names, env }
 }
 
-// Each child is assigned to a Windows Job object with KILL_ON_JOB_CLOSE:
+// Each child is assigned to a Windows Job object with KILL_ON_JOB_CLOSE, so
 // TerminateJobObject kills the whole process tree in one syscall (the
 // taskkill shell-out it replaces took 0.5-2s per PTY and stalled app close),
 // and if boite dies without cleanup the OS closes the handle and reaps the
-// tree anyway.
+// tree anyway. The type is crate::job: the dev MCP starts a process tree of
+// its own and needs exactly this, and two copies of a raw handle drift.
 #[cfg(target_os = "windows")]
-mod job {
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
-    };
-
-    pub struct Job(HANDLE);
-
-    unsafe impl Send for Job {}
-    unsafe impl Sync for Job {}
-
-    impl Job {
-        pub fn assign(pid: u32) -> Option<Self> {
-            unsafe {
-                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-                if job.is_null() {
-                    return None;
-                }
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                if SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const std::ffi::c_void,
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                ) == 0
-                {
-                    CloseHandle(job);
-                    return None;
-                }
-                let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
-                if process.is_null() {
-                    CloseHandle(job);
-                    return None;
-                }
-                let assigned = AssignProcessToJobObject(job, process);
-                CloseHandle(process);
-                if assigned == 0 {
-                    CloseHandle(job);
-                    return None;
-                }
-                Some(Self(job))
-            }
-        }
-
-        pub fn terminate(&self) -> bool {
-            unsafe { TerminateJobObject(self.0, 1) != 0 }
-        }
-    }
-
-    impl Drop for Job {
-        fn drop(&mut self) {
-            unsafe {
-                CloseHandle(self.0);
-            }
-        }
-    }
-}
+use crate::job;
 
 struct PtyHandle {
     // Option so kill() can drop the master while the reader thread still owns
@@ -291,8 +244,23 @@ impl PtyManager {
         });
     }
 
+    /// A remembered resolution, as long as it still names a file.
+    ///
+    /// A binary that moves mid-session is ordinary: claude going from a winget
+    /// link to its own installer deleted the link, and every spawn after that
+    /// kept handing CreateProcess the dead path until the app restarted.
+    fn cached_hit(&self, cmd: &str) -> Option<PathBuf> {
+        let mut cache = self.which_cache.lock();
+        let hit = cache.get(cmd)?;
+        if hit.is_file() {
+            return Some(hit.clone());
+        }
+        cache.remove(cmd);
+        None
+    }
+
     fn is_on_path(&self, cmd: &str) -> bool {
-        if self.which_cache.lock().contains_key(cmd) {
+        if self.cached_hit(cmd).is_some() {
             return true;
         }
         match crate::shell::resolve_command(cmd) {
@@ -356,7 +324,7 @@ impl PtyManager {
     /// the point: a name one of them finds and another does not is a spawn that
     /// contradicts the check that permitted it.
     fn resolve_cmd(&self, cmd: &str) -> String {
-        if let Some(hit) = self.which_cache.lock().get(cmd) {
+        if let Some(hit) = self.cached_hit(cmd) {
             return hit.to_string_lossy().into_owned();
         }
         match crate::shell::resolve_command(cmd) {
@@ -460,8 +428,21 @@ impl PtyManager {
         drop(pair.slave);
 
         let killer = child.clone_killer();
+        let pid = child.process_id();
 
         let id = Uuid::new_v4().to_string();
+        // Every child this process starts, with the pid it started as. The one
+        // fact that is impossible to recover afterwards: a PTY that died gives
+        // its exit code and nothing else, and "which process was that" is the
+        // first question anyone asks about a terminal that stopped.
+        tracing::info!(
+            thread = %thread_of(&spec),
+            pty = %id,
+            pid = pid.unwrap_or(0),
+            cwd = %spec.cwd,
+            cmd = %spec.cmd,
+            "pty.spawned"
+        );
 
         let mut writer = pair
             .master
@@ -508,6 +489,7 @@ impl PtyManager {
         let inner_clone = self.inner.clone();
         let id_clone = id.clone();
         let sink_clone = sink.clone();
+        let thread_for_exit = thread_of(&spec);
         std::thread::spawn(move || {
             read_loop(reader, sink_clone.clone());
             let exit_code = match child.wait() {
@@ -515,6 +497,13 @@ impl PtyManager {
                 Err(_) => -1,
             };
             inner_clone.lock().remove(&id_clone);
+            tracing::info!(
+                thread = %thread_for_exit,
+                pty = %id_clone,
+                pid = pid.unwrap_or(0),
+                code = exit_code,
+                "pty.exited"
+            );
             sink_clone.send(PtyEvent::Exit(Some(exit_code)));
         });
 
@@ -530,7 +519,7 @@ impl PtyManager {
         // try_send, never send: blocking here would re-introduce the UI freeze
         // the writer thread exists to prevent. A full queue means the child is
         // not reading, so the caller is told rather than parked.
-        tx.try_send(data.to_vec()).map_err(|e| match e {
+        tx.try_send(encode_pty_input(data).to_vec()).map_err(|e| match e {
             TrySendError::Full(_) => "pty write queue full: process not reading".to_string(),
             TrySendError::Disconnected(_) => "pty writer closed".to_string(),
         })
@@ -820,9 +809,36 @@ impl Perform for OscPerform {
     fn esc_dispatch(&mut self, _: &[u8], _: bool, _: u8) {}
 }
 
+fn encode_pty_input(data: &[u8]) -> &[u8] {
+    // ConPTY needs a Win32 input record to preserve Shift for native console
+    // readers. Translate a standalone CSI-u key only, never bytes inside a paste.
+    #[cfg(windows)]
+    if data == b"\x1b[13;2u" {
+        return b"\x1b[13;28;13;1;16;1_";
+    }
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modified_enter_reaches_the_host_keyboard_reader() {
+        let expected: &[u8] = if cfg!(windows) {
+            b"\x1b[13;28;13;1;16;1_"
+        } else {
+            b"\x1b[13;2u"
+        };
+        assert_eq!(encode_pty_input(b"\x1b[13;2u"), expected);
+    }
+
+    #[test]
+    fn ordinary_input_and_pasted_sequences_are_unchanged() {
+        for data in [b"\r".as_slice(), b"\n", b"hello", b"\x1b[200~\x1b[13;2u\x1b[201~"] {
+            assert_eq!(encode_pty_input(data), data);
+        }
+    }
 
     #[test]
     fn terminal_defaults_describe_xterm_js() {
@@ -897,6 +913,22 @@ mod tests {
         assert!(m.wrap_plan(&spec(shadowed, Some(&shell))).is_some());
     }
 
+    #[test]
+    fn a_cached_binary_that_went_away_is_resolved_again() {
+        let m = PtyManager::new();
+        let name = if cfg!(windows) { "cmd" } else { "sh" };
+        let gone = std::env::temp_dir()
+            .join(format!("boite_gone_{}", std::process::id()))
+            .join(name);
+        m.which_cache.lock().insert(name.to_string(), gone.clone());
+        let resolved = m.resolve_cmd(name);
+        assert_ne!(resolved, gone.to_string_lossy());
+        assert!(
+            Path::new(&resolved).is_file(),
+            "{name} resolved to {resolved}, which is not a file"
+        );
+    }
+
     struct Collector(Arc<Mutex<Vec<u8>>>);
     impl EventSink for Collector {
         fn send(&self, event: PtyEvent) -> bool {
@@ -910,10 +942,11 @@ mod tests {
     /// Longer than any query below, so a split one is always held whole.
     const QUERY_MAX: usize = 8;
 
-    /// The questions ConPTY asks before it will let the child print, and the
+    /// The questions a child asks its terminal before it prints, and the
     /// shortest true answer to each. Same set as `TerminalQueries` in
-    /// `install-output.ts`: unanswered `[6n` leaves the child stopped, which is
-    /// how the kill-hook tests used to panic on a loaded Windows runner.
+    /// `install-output.ts`. Upstream portable-pty had ConPTY ask `[6n` itself
+    /// and hold the child until answered, which is how the kill-hook tests
+    /// used to panic on a loaded Windows runner.
     #[derive(Default)]
     struct ConptyQueries {
         carry: Vec<u8>,
@@ -1208,9 +1241,8 @@ mod tests {
         args.cwd = dir.to_string_lossy().into_owned();
         let id = m.spawn(sink, args).expect("node spawn");
 
-        // ConPTY opens by asking the terminal where the cursor is and hands the
-        // child nothing until something answers. In here we are the terminal,
-        // and a child still stuck on that question proves nothing about a kill.
+        // In here we are the terminal, and a child still stuck on a question
+        // nobody answered proves nothing about a kill.
         let got = wait_for_output(m, &id, &seen, "ready", std::time::Duration::from_secs(15));
         if got.contains("ready") {
             return Some((id, marker));
@@ -1284,6 +1316,101 @@ mod tests {
                 std::fs::read_to_string(&marker).unwrap_or_default().is_empty(),
                 "the hard kill ran the exit hook, so the grace the other path pays for proves nothing"
             );
+        });
+    }
+
+    #[cfg(windows)]
+    fn children_of_this_process() -> HashSet<u32> {
+        let me = std::process::id();
+        crate::session::process_parents()
+            .into_iter()
+            .filter(|&(_, parent)| parent == me)
+            .map(|(pid, _)| pid)
+            .collect()
+    }
+
+    /// Every process in `started` is gone within a few seconds. The console
+    /// host leaves a moment after its pseudoconsole closes, not with it.
+    #[cfg(windows)]
+    fn assert_all_gone(started: &HashSet<u32>, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let left: Vec<u32> = children_of_this_process()
+                .intersection(started)
+                .copied()
+                .collect();
+            if left.is_empty() {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} left processes behind: {left:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// A terminal that never writes anything back, which is every one opened
+    /// while the webview could not reach its PTYs. Upstream portable-pty had
+    /// ConPTY wait on the answer to `[6n` before running the child, and a
+    /// console closed during that wait never exited: the kill timed out and
+    /// the console host stayed behind. See `vendor/portable-pty`.
+    #[cfg(windows)]
+    #[test]
+    fn a_pty_nobody_answers_still_runs_and_can_be_killed() {
+        with_conpty_probe(|| {
+            let m = PtyManager::new();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink: Arc<dyn EventSink> = Arc::new(Collector(seen.clone()));
+            let mut args = spec("cmd", None);
+            args.args = vec!["/k".into(), "echo boite_ready".into()];
+            args.cwd = std::env::temp_dir().to_string_lossy().into_owned();
+            let before = children_of_this_process();
+            let id = m.spawn(sink, args).expect("cmd spawn");
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !seen.lock().windows(11).any(|w| w == b"boite_ready") {
+                if std::time::Instant::now() >= deadline {
+                    let _ = m.kill(&id, true);
+                    let got = String::from_utf8_lossy(&seen.lock()).into_owned();
+                    panic!("the child never ran without an answer from the terminal; got: {got:?}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert!(
+                !seen.lock().windows(4).any(|w| w == b"\x1b[6n"),
+                "the console asked the terminal where its cursor is"
+            );
+            let started: HashSet<u32> =
+                children_of_this_process().difference(&before).copied().collect();
+
+            let clock = std::time::Instant::now();
+            let killed = m.kill(&id, true);
+            assert!(killed.is_ok(), "{killed:?} after {:?}", clock.elapsed());
+            assert!(!m.is_alive(&id));
+            assert_all_gone(&started, "a kill");
+        });
+    }
+
+    /// The spawn that fails after the pseudoconsole already exists: a command
+    /// path that went stale is exactly that, since `openpty` starts the console
+    /// host before `CreateProcess` is asked for anything.
+    #[cfg(windows)]
+    #[test]
+    fn a_spawn_that_fails_leaves_no_console_host_behind() {
+        with_conpty_probe(|| {
+            let m = PtyManager::new();
+            let sink: Arc<dyn EventSink> = Arc::new(Collector(Arc::new(Mutex::new(Vec::new()))));
+            let gone = std::env::temp_dir()
+                .join(format!("boite_no_such_{}", std::process::id()))
+                .join("agent.exe");
+            let mut args = spec(&gone.to_string_lossy(), None);
+            args.cwd = std::env::temp_dir().to_string_lossy().into_owned();
+            let before = children_of_this_process();
+            assert!(m.spawn(sink, args).is_err());
+            let started: HashSet<u32> =
+                children_of_this_process().difference(&before).copied().collect();
+            assert_all_gone(&started, "a failed spawn");
         });
     }
 }

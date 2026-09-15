@@ -6,7 +6,8 @@
   import { t } from "$lib/i18n/index.svelte";
   import { settings } from "$lib/features/settings/store.svelte";
   import { DUR, easeOutQuint } from "$lib/theme/motion";
-  import { approvals, MAX_VISIBLE, type ApprovalItem } from "./store.svelte";
+  import { approvals, MAX_VISIBLE, PILOT_ACTION, type ApprovalItem } from "./store.svelte";
+  import { lazyComponent } from "$lib/shared/lazy.svelte";
 
   // Bottom centre, arriving from off-screen. The corners are taken: toasts own
   // the right one and the keyboard FAB the left, and both of those are things
@@ -44,6 +45,26 @@
     const key = ACTIONS[action as keyof typeof ACTIONS];
     return key ? t(key, { detail }) : t("approval.action.other", { action, detail });
   };
+
+  /**
+   * The chat runtime's own card, fetched only when one arrives.
+   *
+   * Lazy for the same reason the chat pane is: the dock is drawn by the layout
+   * before first paint, and a static import here would put the pilot store and
+   * its reducer back on the boot path of every window, experiment or no
+   * experiment. A row of kind `pilot.request` is rare and the chunk is small,
+   * so the fetch happens while the card is animating in.
+   */
+  const PilotCard = lazyComponent(
+    () => import("$lib/features/pilot/PilotApproval.svelte"),
+  );
+
+  const isPilot = (item: ApprovalItem) =>
+    item.source === "agent" && item.row.action === PILOT_ACTION;
+
+  $effect(() => {
+    if (approvals.items.some(isPilot)) void PilotCard.ensure();
+  });
 
   /** The words a card shows, from whichever half of the store it came from. */
   function view(item: ApprovalItem) {
@@ -85,12 +106,12 @@
         class="pointer-events-auto flex items-center justify-between gap-3 self-stretch px-1"
         transition:fly={{ y: mobile ? -12 : 12, duration: DUR.base, easing: easeOutQuint }}
       >
-        <span class="text-2xs font-medium uppercase tracking-wider text-muted-foreground">
+        <span class="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {t("approval.waitingCount", { count: String(approvals.items.length) })}
         </span>
         <button
           type="button"
-          class="rounded-sm px-1.5 py-0.5 text-2xs text-muted-foreground transition hover:bg-[var(--color-surface-3)] hover:text-foreground"
+          class="rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground transition hover:bg-[var(--color-surface-3)] hover:text-foreground"
           onclick={() => void approvals.decideAll(true)}
         >
           {t("approval.allowAll")}
@@ -100,6 +121,10 @@
 
     {#each shown as item (item.id)}
       {@const card = view(item)}
+      {@const pilot = isPilot(item) && item.source === "agent" ? item.row : null}
+      <!-- One box per card whichever source it came from: `animate:` has to be
+           the only child of the keyed block, so the two shapes are a branch
+           inside it rather than two boxes beside it. -->
       <div
         class="surface-dialog pointer-events-auto overflow-hidden"
         animate:flip={{ duration: DUR.base }}
@@ -108,6 +133,23 @@
         role="alertdialog"
         aria-label={card.title}
       >
+        {#if pilot}
+          <!-- The same card as the pane's, compact. Answering goes through
+               `pilot.request.respond` rather than `approvals.decide`: the
+               driver's options are a vocabulary of its own, and yes-or-no
+               cannot carry "always allow". -->
+          <div class="p-2">
+            <p class="px-1 pb-1 text-xs text-muted-foreground">
+              {threadName(pilot.threadId)} · {projectName(pilot.projectId)}
+            </p>
+            {#if PilotCard.current}
+              {@const PilotComp = PilotCard.current}
+              <PilotComp threadId={pilot.threadId} requestId={pilot.detail} />
+            {:else}
+              <p class="px-1 text-sm text-muted-2">{t("common.loading")}</p>
+            {/if}
+          </div>
+        {:else}
         <div class="flex gap-3 px-4 pb-3 pt-3.5">
           <span
             class="mt-px flex size-7 shrink-0 items-center justify-center rounded-full border {card.tone ===
@@ -119,14 +161,14 @@
           </span>
           <div class="min-w-0 flex-1">
             <p class="flex items-baseline justify-between gap-2">
-              <span class="truncate text-xs font-semibold text-foreground">{card.title}</span>
+              <span class="truncate text-sm font-semibold text-foreground">{card.title}</span>
               {#if card.where}
-                <span class="shrink-0 text-2xs text-muted-foreground">{card.where}</span>
+                <span class="shrink-0 text-xs text-muted-foreground">{card.where}</span>
               {/if}
             </p>
-            <p class="mt-1 text-sm leading-relaxed text-foreground/90">{card.message}</p>
+            <p class="mt-1 text-sm leading-relaxed text-foreground">{card.message}</p>
             {#if card.note}
-              <p class="mt-1.5 text-2xs leading-snug text-muted-foreground">{card.note}</p>
+              <p class="mt-1.5 text-xs leading-snug text-muted-foreground">{card.note}</p>
             {/if}
           </div>
         </div>
@@ -135,7 +177,7 @@
         >
           <button
             type="button"
-            class="rounded-md border border-border bg-[var(--color-surface-2)] px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-[var(--color-surface-3)] hover:text-foreground disabled:opacity-50"
+            class="rounded-md border border-edge bg-[var(--color-surface-2)] px-3 py-1.5 text-sm text-muted-foreground transition hover:bg-[var(--color-surface-3)] hover:text-foreground disabled:opacity-50"
             disabled={approvals.deciding.includes(item.id)}
             onclick={() => void approvals.decide(item.id, false)}
           >
@@ -143,7 +185,7 @@
           </button>
           <button
             type="button"
-            class="rounded-md px-3 py-1.5 text-xs font-medium transition disabled:opacity-50 {card.tone ===
+            class="rounded-md px-3 py-1.5 text-sm font-medium transition disabled:opacity-50 {card.tone ===
             'danger'
               ? 'bg-danger text-white hover:bg-danger/90'
               : 'bg-foreground text-background hover:bg-foreground/90'}"
@@ -153,13 +195,14 @@
             {card.allowLabel}
           </button>
         </footer>
+        {/if}
       </div>
     {/each}
 
     {#if hidden > 0}
       <!-- Said rather than stacked: forty cards cover the window they are
            asking about, and answering one uncovers the next. -->
-      <p class="pointer-events-none text-center text-2xs text-muted-foreground">
+      <p class="pointer-events-none text-center text-xs text-muted-foreground">
         {t("approval.more", { count: String(hidden) })}
       </p>
     {/if}
