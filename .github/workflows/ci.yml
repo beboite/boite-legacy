@@ -40,6 +40,8 @@ jobs:
         run: bun run check
       - name: Unit tests
         run: bun run test
+      - name: Release notes tests
+        run: node --test scripts/release-notes.test.mjs
       - name: Build (vite only)
         run: bun run build
       # What the window downloads before it can paint, against a committed

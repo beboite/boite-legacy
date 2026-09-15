@@ -29,8 +29,16 @@ jobs:
   # without being added here, so two crates could ship a version nobody checked.
   verify:
     runs-on: ubuntu-latest
+    outputs:
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: List commits since the previous release
+        id: notes
+        run: node scripts/release-notes.mjs
 
       - name: Versions agree with each other, and with the tag
         run: |
@@ -225,7 +233,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: Boite v__VERSION__
-          releaseBody: "See the assets below to download and install."
+          releaseBody: ${{ needs.verify.outputs.notes }}
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true

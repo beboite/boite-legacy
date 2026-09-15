@@ -4,6 +4,11 @@ Releases are built by [`.github/workflows/release.yml`](../.github/workflows/rel
 on a pushed `v*` tag, one job per platform. It signs the update payloads and
 opens a **draft** release: clients see nothing until you publish it.
 
+The release notes list every commit since the preceding reachable `v*` tag,
+oldest first, with links to the commits. The first release lists the whole
+history. `scripts/release-notes.mjs` generates the same notes on a tag push or
+a manual run; all platform jobs use the result from `verify`.
+
 ## Cutting a release
 
 Bump the version in the nine places that carry it:
