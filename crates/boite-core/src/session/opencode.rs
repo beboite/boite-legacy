@@ -332,7 +332,6 @@ fn find_opencode_session_in(
     let target = normalize(cwd);
     find_opencode_session_by_activity(conn, &target, after_unix_ms, exclude)
         .or_else(|| find_opencode_session_by_created(conn, &target, after_unix_ms, exclude))
-        .or_else(|| find_opencode_session_by_activity(conn, &target, 0, exclude))
 }
 
 pub fn find_opencode_session_blocking(
@@ -483,6 +482,30 @@ mod tests {
             cwd: "D:/Work/One".into(),
         };
         assert!(opencode_turns_in(&conn, &[other]).is_empty());
+    }
+
+    #[test]
+    fn opencode_does_not_capture_sessions_older_than_the_probe() {
+        let conn = Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE session (
+                 id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT,
+                 time_created INTEGER, time_updated INTEGER
+             );
+             INSERT INTO session VALUES
+                 ('old', NULL, 'D:/Work/One', 1000, 2000),
+                 ('current', NULL, 'D:/Work/One', 8000, 9000);",
+        )
+        .expect("fixture");
+
+        assert!(find_opencode_session_in(&conn, "D:/Work/One", 10000, &HashSet::new()).is_none());
+
+        let exclude = HashSet::from(["current".to_string()]);
+        assert!(find_opencode_session_in(&conn, "D:/Work/One", 8000, &exclude).is_none());
+
+        let hit = find_opencode_session_in(&conn, "D:/Work/One", 9000, &HashSet::new())
+            .expect("activity at the probe boundary");
+        assert_eq!(hit.id, "current");
     }
 
     #[test]
