@@ -165,9 +165,17 @@ BOITE_E2E_CODEX=1 bun run e2e -- codex-native-name
 BOITE_E2E_SHOT=C:\tmp\chat.png bun run e2e
 ```
 
-The opt-in Codex newline scenario checks Shift+Enter, Ctrl+J and plain Enter
-against the installed CLI. It submits an unknown slash command, so no model
-turn starts.
+The opt-in Codex newline scenario checks Shift+Enter, Ctrl+J, plain Enter,
+Backspace and Escape against the installed CLI. It submits an unknown slash
+command, so no model turn starts.
+
+The PTY input scenario sends concurrent writes through Tauri and checks their
+order in a real child process. Tauri's custom-protocol requests can arrive out
+of order, so the frontend waits for each write to be queued before sending the
+next one on that PTY. Different terminals keep separate queues.
+
+The end-to-end runner finds its MCP binary through `cargo metadata`, including
+when Cargo's `target-dir` points outside the checkout.
 
 The native-name scenario checks late names, idle refresh and manual renames.
 Its opt-in case sends one short prompt to the installed Codex CLI and checks

@@ -14,7 +14,7 @@
  * suite would spend them once per file.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { copyFileSync, existsSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -83,12 +83,17 @@ export function scenarioPath(name: string): string {
  */
 export function devBinary(): string {
   const exe = process.platform === "win32" ? "boite-mcp.exe" : "boite-mcp";
+  const metadata = JSON.parse(execFileSync("cargo", ["metadata", "--no-deps", "--format-version", "1"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    windowsHide: true,
+  })) as { target_directory: string };
   for (const profile of ["debug", "release"]) {
-    const candidate = path.join(REPO_ROOT, "target", profile, exe);
+    const candidate = path.join(metadata.target_directory, profile, exe);
     if (existsSync(candidate)) return candidate;
   }
   throw new Error(
-    `no ${exe} under ${path.join(REPO_ROOT, "target")}: run \`cargo build -p boite-mcp\` first`,
+    `no ${exe} under ${metadata.target_directory}: run \`cargo build -p boite-mcp\` first`,
   );
 }
 
