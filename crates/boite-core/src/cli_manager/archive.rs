@@ -291,7 +291,7 @@ mod tests {
         let zipped = dir.join("opencode-windows-x64.zip");
 
         let mut writer = zip::ZipWriter::new(std::fs::File::create(&zipped).unwrap());
-        let options: zip::write::FileOptions<'_, ()> =
+        let options: zip::write::FileOptions<'_, '_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         writer.start_file("opencode.exe", options).unwrap();
         writer.write_all(b"binary").unwrap();
